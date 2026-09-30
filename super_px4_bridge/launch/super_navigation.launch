@@ -1,0 +1,122 @@
+<?xml version="1.0"?>
+
+<launch>
+
+  <!-- Sensor adapter -->
+  <node pkg="super_px4_bridge"
+        type="super_sensor_adapter_node"
+        name="super_sensor_adapter_node"
+        output="screen">
+
+    <param name="cloud_topic"
+           value="/velodyne_points"/>
+
+    <param name="odom_topic"
+           value="/mavros/local_position/odom"/>
+
+    <param name="registered_cloud_topic"
+           value="/cloud_registered"/>
+
+    <param name="registered_odom_topic"
+           value="/lidar_slam/odom"/>
+
+    <param name="world_frame"
+           value="world"/>
+
+    <param name="base_frame"
+           value="base_link"/>
+
+    <param name="lidar_x" value="0.0"/>
+    <param name="lidar_y" value="0.0"/>
+    <param name="lidar_z" value="0.16"/>
+
+    <param name="lidar_roll" value="0.0"/>
+    <param name="lidar_pitch" value="0.0"/>
+    <param name="lidar_yaw" value="0.0"/>
+
+    <param name="max_odom_age" value="0.10"/>
+  </node>
+
+
+  <!-- ROG-Map + SUPER -->
+  <node pkg="super_planner"
+        type="fsm_node"
+        name="fsm_node"
+        output="screen">
+
+    <param name="config_path"
+           value="$(find super_px4_bridge)/config/px4_sim.yaml"/>
+  </node>
+
+
+  <!-- SUPER PositionCommand -> internal PositionTarget -->
+  <node pkg="super_px4_bridge"
+        type="super_mavros_bridge_node"
+        name="super_mavros_bridge_node"
+        output="screen">
+
+    <param name="pos_cmd_topic"
+           value="/planning/pos_cmd"/>
+
+    <param name="setpoint_topic"
+           value="/super/setpoint_raw/local"/>
+  </node>
+
+
+  <!-- Takeoff, command switching and final hover -->
+  <node pkg="super_px4_bridge"
+        type="super_flight_manager_node"
+        name="super_flight_manager_node"
+        output="screen">
+
+    <param name="state_topic"
+           value="/mavros/state"/>
+
+    <param name="odom_topic"
+           value="/mavros/local_position/odom"/>
+
+    <param name="cloud_topic"
+           value="/velodyne_points"/>
+
+    <param name="user_goal_topic"
+           value="/planning/user_goal"/>
+
+    <param name="super_goal_topic"
+           value="/planning/click_goal"/>
+
+    <param name="super_setpoint_topic"
+           value="/super/setpoint_raw/local"/>
+
+    <param name="mavros_setpoint_topic"
+           value="/mavros/setpoint_raw/local"/>
+
+    <param name="takeoff_height" value="1.5"/>
+    <param name="publish_rate" value="50.0"/>
+
+    <param name="prestream_time" value="1.0"/>
+    <param name="hover_stable_time" value="1.0"/>
+    <param name="map_warmup_time" value="2.0"/>
+
+    <param name="super_cmd_timeout" value="1.0"/>
+    <param name="planning_timeout" value="5.0"/>
+
+    <param name="goal_tolerance" value="0.20"/>
+    <param name="altitude_tolerance" value="0.15"/>
+    <param name="velocity_tolerance" value="0.25"/>
+    <!-- Actual terminal hold + smooth entry/settle, never jump to unsnapped goal. -->
+    <param name="handover_time" value="1.0"/>
+    <param name="settle_timeout" value="6.0"/>
+    <param name="max_goal_projection" value="0.35"/>
+    <param name="terminal_capture_radius" value="0.50"/>
+    <param name="terminal_speed_tolerance" value="0.05"/>
+    <param name="max_source_age" value="0.30"/>
+    <param name="yaw_rate_limit" value="0.35"/>
+    <param name="yaw_acceleration_limit" value="0.50"/>
+
+    <param name="odom_timeout" value="0.5"/>
+    <param name="cloud_timeout" value="1.0"/>
+
+    <param name="auto_arm" value="true"/>
+  </node>
+
+</launch>

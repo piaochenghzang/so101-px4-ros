@@ -1,0 +1,36 @@
+<launch>
+  <node
+    pkg="super_sensor_adapter"
+    type="super_sensor_adapter_node"
+    name="super_sensor_adapter"
+    output="screen">
+
+    <param name="cloud_topic"
+           value="/velodyne_points"/>
+
+    <param name="odom_topic"
+           value="/mavros/local_position/odom"/>
+
+    <param name="registered_cloud_topic"
+           value="/cloud_registered"/>
+
+    <param name="registered_odom_topic"
+           value="/lidar_slam/odom"/>
+
+    <param name="world_frame"
+           value="world"/>
+
+    <param name="base_frame"
+           value="base_link"/>
+
+    <param name="lidar_x" value="0.0"/>
+    <param name="lidar_y" value="0.0"/>
+    <param name="lidar_z" value="0.23"/>
+
+    <param name="lidar_roll" value="0.0"/>
+    <param name="lidar_pitch" value="0.0"/>
+    <param name="lidar_yaw" value="0.0"/>
+
+    <param name="max_odom_age" value="0.10"/>
+  </node>
+</launch>

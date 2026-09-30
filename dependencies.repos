@@ -1,0 +1,5 @@
+repositories:
+  SUPER:
+    type: git
+    url: https://github.com/hku-mars/SUPER.git
+    version: 2ad3419c127a617c6d7df6925e81a14175a9c096
