@@ -111,3 +111,43 @@ SUPER 的全局偏航轨迹仍可能异常，管理器限制的是实际发往�
 91% 的推力请求能完全满足。**推力余量问题没有因此消失**，携物前需单独验证动力裕度。
 现有 `start_super_sim.sh` 会按进程名清理 Gazebo，适用于用户独占会话；
 隔离实验使用本仓库测试脚本，不调用该全局清理入口。
+
+## 只读坐标观察（2026-10-01）
+
+`super_px4_bridge` 新增同一物理步采样的诊断 WorldPlugin、坐标观察器和被动验证入口。
+仅发布 `/grasp_audit/truth` 诊断；观察器只有订阅和 JSONL 输出，所有记录的
+`close_permitted=false`。不发布飞行/关节/闭爪命令，不改 PID、生产 SDF 或 arm_control。
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/pcz/super_ws/devel/setup.bash
+cd /home/pcz/super_ws
+catkin_make -j4 so101_coordinate_truth
+cd build
+ctest --output-on-failure -R 'grasp_frame|super_command_transition|so101_command_watchdog'
+rosrun super_px4_bridge run_readonly_frame_audit.py --name frame_check_01 --case tilted --duration 4
+```
+
+请替换为实际 catkin 工作区；`PX4_DIR` / `ROS_WS` 可覆盖依赖路径。
+测试发现现有仿真则拒绝启动；结果写入 PX4 `build/frame_audit/<name>`，名称不能重复。
+生成的副本移除控制插件、传感器和碰撞，车辆 dynamic、世界零重力，方块 static；
+不启动 PX4/MAVROS，不调用模型 set/spawn/reset，也不改原文件。
+不使用整机 static 的 Joint::Position 缓存作为编码器，采样器明确拒绝这类角度。
+
+零偏航、偏航、小倾角的被动链核对通过，实际 FK 位置差约 4.21 μm；
+物体缺失和错安装配置负例正确拒绝。数学/回调测试覆盖非零原点、错 frame、错时刻、
+旧目标和重置。该被动场景不验证重力、接触、飞行稳定或抓取；真实 MAVROS 配准尚未验收。
+
+正常仿真使用时，须在 world 内显式加载 `libso101_coordinate_truth.so`
+（plugin name=coordinate_truth，vehicleName=yhang550，targetName=test_cube），
+并有 gazebo_ros API、use_sim_time=true、devel/lib 插件路径；本轮未自动修改生产启动流程。
+随后可只运行：
+
+```bash
+rosrun super_px4_bridge observe_grasp_frames.py --output /tmp/grasp_frames_01.jsonl --duration 20
+```
+
+无 MAVROS 时 local_valid=false；配准冻结后继续记录残差，不逐帧重拟合掩盖误差。
+`local_valid` 仅表示转换可用，毫米精度另由 `local_precision_consistent` 表示。
+旧 joint_states 对照标为近似 ROS clock；主 FK 用物理步实测角。
+参考点是当前 20 mm 方块/碰撞代理的模板，不是通用 TCP；几何对齐不等于准许闭爪。

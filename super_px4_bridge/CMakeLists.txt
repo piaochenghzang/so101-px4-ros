@@ -8,16 +8,21 @@ project(super_px4_bridge)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
+  message_generation
   geometry_msgs
   mavros_msgs
   nav_msgs
   quadrotor_msgs
   roscpp
   sensor_msgs
+  std_msgs
   tf2
   tf2_geometry_msgs
   tf2_sensor_msgs
 )
+find_package(gazebo REQUIRED)
+add_message_files(FILES CoordinateTruth.msg)
+generate_messages(DEPENDENCIES std_msgs geometry_msgs)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -109,6 +114,7 @@ find_package(catkin REQUIRED COMPONENTS
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
+  CATKIN_DEPENDS message_runtime std_msgs geometry_msgs
 #  INCLUDE_DIRS include
 #  LIBRARIES super_px4_bridge
 #  CATKIN_DEPENDS geometry_msgs mavros_msgs nav_msgs quadrotor_msgs roscpp sensor_msgs tf2 tf2_geometry_msgs tf2_sensor_msgs
@@ -142,6 +148,11 @@ include_directories(
 add_executable(super_sensor_adapter_node src/super_sensor_adapter.cpp)
 add_executable(super_mavros_bridge_node src/super_mavros_bridge.cpp)
 add_executable(super_flight_manager_node src/super_flight_manager.cpp)
+add_library(so101_coordinate_truth SHARED src/coordinate_truth_plugin.cpp)
+target_include_directories(so101_coordinate_truth PRIVATE ${GAZEBO_INCLUDE_DIRS})
+target_link_libraries(so101_coordinate_truth ${GAZEBO_LIBRARIES} ${catkin_LIBRARIES})
+add_dependencies(so101_coordinate_truth ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+set_target_properties(so101_coordinate_truth PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED YES)
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
 ## target back to the shorter version for ease of user use
@@ -176,6 +187,12 @@ target_link_libraries(super_flight_manager_node
 #   scripts/my_python_script
 #   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 # )
+catkin_install_python(PROGRAMS scripts/observe_grasp_frames.py scripts/run_readonly_frame_audit.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(DIRECTORY scripts/grasp_audit DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+  PATTERN __pycache__ EXCLUDE)
+install(TARGETS so101_coordinate_truth LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
+install(DIRECTORY config/ DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config)
 
 ## Mark executables for installation
 ## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html
@@ -220,4 +237,7 @@ target_link_libraries(super_flight_manager_node
 if(CATKIN_ENABLE_TESTING)
   add_executable(test_super_command_transition tests/test_command_transition.cpp)
   add_test(NAME super_command_transition COMMAND test_super_command_transition)
+  add_test(NAME grasp_frame_math COMMAND ${PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_grasp_frames.py)
+  add_test(NAME grasp_frame_callbacks COMMAND ${CATKIN_DEVEL_PREFIX}/env.sh
+    ${PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_frame_observer.py)
 endif()
