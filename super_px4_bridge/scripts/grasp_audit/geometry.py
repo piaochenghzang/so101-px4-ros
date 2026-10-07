@@ -65,8 +65,15 @@ def fk_gripper(config, q):
     return chain
 
 
-def interpolate_pose(samples, stamp, max_skew):
-    """Bracketed source-time interpolation only; never extrapolate or restamp."""
+def pose_support(samples, stamp, max_skew):
+    """Strict source-time bracket; duplicates/out-of-order input is never used."""
+    if not math.isfinite(stamp) or stamp <= 0 or not math.isfinite(max_skew) or max_skew <= 0:
+        raise ValueError('INVALID_SOURCE_TIME')
+    stamps = [s[0] for s in samples]
+    if any(not math.isfinite(t) or t <= 0 for t in stamps):
+        raise ValueError('INVALID_SOURCE_TIME')
+    if any(b <= a for a,b in zip(stamps, stamps[1:])):
+        raise ValueError('SOURCE_NONMONOTONIC')
     before = next((s for s in reversed(samples) if s[0] <= stamp), None)
     after = next((s for s in samples if s[0] >= stamp), None)
     if before is None or after is None:
@@ -74,6 +81,12 @@ def interpolate_pose(samples, stamp, max_skew):
     skew = max(stamp-before[0], after[0]-stamp)
     if skew > max_skew+1e-9:
         raise ValueError('SOURCE_SKEW')
+    return before, after, skew
+
+
+def interpolate_pose(samples, stamp, max_skew):
+    """Bracketed source-time interpolation only; never extrapolate or restamp."""
+    before, after, skew = pose_support(samples, stamp, max_skew)
     a, b = finite(before[1], (7,)), finite(after[1], (7,))
     pose_transform(a); pose_transform(b)
     if after[0] == before[0]:

@@ -151,3 +151,18 @@ rosrun super_px4_bridge observe_grasp_frames.py --output /tmp/grasp_frames_01.js
 `local_valid` 仅表示转换可用，毫米精度另由 `local_precision_consistent` 表示。
 旧 joint_states 对照标为近似 ROS clock；主 FK 用物理步实测角。
 参考点是当前 20 mm 方块/碰撞代理的模板，不是通用 TCP；几何对齐不等于准许闭爪。
+
+2026-10-07 时间配对修正：保持原 20 ms 双侧支持、100 ms 真值新鲜度和
+2 mm / 0.001 rad 精度门限不变；仅在等待未来 odom 端点时有界等待至 80 ms。
+单次缺样/时差超限只拒绝该样本，不清除被冻结的原点；重复 odom 时间戳拒绝两条，
+若污染校准支持则锁定失效，不能自动重拟合来消掉误差。时钟/实体变化、FCU 断联
+或 frame 错配清除配准。没有 EKF reset-counter 输入，输出对此明确标为 unavailable；
+因此配准只是诊断变换，不是可直接用于导航或闭爪的 TF/许可。
+
+正常场景可加 `--require-local`：缺少当前世代至少十个有效局部配对时返回非零。
+它不等于精度通过；JSON summary 分开给出 observation_complete、
+local_registration_current、local_precision_verdict，且始终 grasp_tested=false。
+有无方块都核对机体/TCP；有方块时另核对物体相对位置，不制造缺失的目标。
+正常未解锁场景连续 40 s 复测得到 1941 条真值、467 条有效局部配对，
+原点仅冻结一次；位置残差最大约 0.330 m，精度明确 FAIL，不能用于抓取对齐。
+该结果只证明时间配对/漂移可观测性，不证明飞行、物体对齐或抓取已验收。

@@ -129,5 +129,13 @@ class FrameChecks(unittest.TestCase):
         self.assertFalse(current_goal(20,10,13,15))
         self.assertTrue(current_goal(14,10,13,15))
 
+    def test_interpolation_rejects_ambiguous_or_invalid_source_times(self):
+        pose = [0,0,0,1,0,0,0]
+        for samples in ([(1,pose),(1,pose)],[(1.02,pose),(1,pose)],
+                        [(float('nan'),pose)],[(0,pose)]):
+            with self.assertRaises(ValueError): interpolate_pose(samples,1,.02)
+        for stamp,limit in ((float('nan'),.02),(0,.02),(1,0),(1,float('nan'))):
+            with self.assertRaises(ValueError): interpolate_pose([(1,pose)],stamp,limit)
+
 
 if __name__ == '__main__': unittest.main()
