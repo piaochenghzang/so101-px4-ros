@@ -14,6 +14,9 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <quadrotor_msgs/PolynomialTrajectory.h>
 #include <super_px4_bridge/command_transition.h>
+#include <super_px4_bridge/known_flight_handover.h>
+#include <super_px4_bridge/KnownFlightSetpoint.h>
+#include <std_msgs/String.h>
 
 
 class SuperFlightManager
@@ -64,6 +67,9 @@ public:
                 super_goal_topic_, 5);
         resolved_goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(
             "/planning/resolved_goal", 1, true);
+        flight_state_pub_=nh_.advertise<std_msgs::String>("/grasp_demo/flight_state",1,true);
+        known_setpoint_sub_=nh_.subscribe("/grasp_demo/known_setpoint",20,
+            &SuperFlightManager::knownSetpointCallback,this);
         trajectory_sub_ = nh_.subscribe("/planning_cmd/poly_traj", 50,
             &SuperFlightManager::trajectoryCallback, this);
 
@@ -107,7 +113,8 @@ private:
         TRACK_SUPER,
         SETTLE_HOVER,
         FINAL_HOVER,
-        FAILSAFE_HOVER
+        FAILSAFE_HOVER,
+        TRACK_KNOWN
     };
 
     void loadParameters()
@@ -185,6 +192,10 @@ private:
 
         pnh_.param("auto_arm",
                    auto_arm_, true);
+        pnh_.param("known_goal_mode", known_goal_mode_, false);
+        if (known_goal_mode_ && !nh_.param<bool>("/use_sim_time", false)) {
+            throw std::invalid_argument("known_goal_mode is simulation-only and requires use_sim_time");
+        }
         pnh_.param("handover_time", handover_time_, 1.0);
         pnh_.param("settle_timeout", settle_timeout_, 6.0);
         pnh_.param("max_goal_projection", max_goal_projection_, 0.35);
@@ -232,6 +243,7 @@ private:
     void userGoalCallback(
         const geometry_msgs::PoseStampedConstPtr &msg)
     {
+        if (known_goal_mode_) { ROS_WARN_THROTTLE(1,"Known-goal demo owns navigation; rejecting planner goal"); return; }
         if (!std::isfinite(msg->pose.position.x) ||
             !std::isfinite(msg->pose.position.y) ||
             !std::isfinite(msg->pose.position.z)) {
@@ -275,9 +287,32 @@ private:
         }
     }
 
+    void knownSetpointCallback(const super_px4_bridge::KnownFlightSetpointConstPtr &msg)
+    {
+        if (!known_goal_mode_ || known_lease_.failed) return;
+        if (flight_state_!=FlightState::HOVER_READY && flight_state_!=FlightState::FINAL_HOVER
+            && flight_state_!=FlightState::TRACK_KNOWN) return;
+        const auto &p=msg->setpoint; const auto motion=motionOf(p);
+        const uint16_t mask=mavros_msgs::PositionTarget::IGNORE_AFX |
+            mavros_msgs::PositionTarget::IGNORE_AFY | mavros_msgs::PositionTarget::IGNORE_AFZ |
+            mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+        const bool valid=msg->header.frame_id=="map" && p.header.frame_id=="map"
+            && p.header.stamp==msg->header.stamp &&
+            p.coordinate_frame==mavros_msgs::PositionTarget::FRAME_LOCAL_NED && p.type_mask==mask
+            && super_px4_bridge::finite(motion.position) && super_px4_bridge::finite(motion.velocity)
+            && std::isfinite(p.yaw) && motion.position[2]>=.3 && motion.position[2]<=2.5
+            && super_px4_bridge::distance(motion.position,positionOf(current_odom_.pose.pose.position))<=1.0
+            && super_px4_bridge::distance(motion.velocity,super_px4_bridge::Vec3{{0,0,0}})<=1.0;
+        if (!known_lease_.accept(msg->task_id,msg->header.stamp.toSec(),ros::Time::now().toSec(),valid)) return;
+        known_setpoint_=p;
+        if (flight_state_!=FlightState::TRACK_KNOWN) transitionTo(FlightState::TRACK_KNOWN);
+    }
+
+
     void superSetpointCallback(
         const mavros_msgs::PositionTargetConstPtr &msg)
     {
+        if (known_goal_mode_) return;
         const ros::Time now = ros::Time::now();
         const auto motion = motionOf(*msg);
         const double age = (now - msg->header.stamp).toSec();
@@ -360,18 +395,20 @@ private:
 
         if (!have_fcu_state_ ||
             !current_fcu_state_.connected) {
+            if (known_goal_mode_ && known_lease_.id) known_lease_.fault();
 
             printStateThrottled("waiting for FCU");
             return;
         }
 
         if (!odomFresh(now)) {
+            if (known_goal_mode_ && known_lease_.id) known_lease_.fault();
             printStateThrottled("waiting for odometry");
             return;
         }
 
         if (flight_state_ == FlightState::WAIT_FCU) {
-            if (!cloudFresh(now)) {
+            if (!known_goal_mode_ && !cloudFresh(now)) {
                 printStateThrottled("waiting for LiDAR");
                 return;
             }
@@ -388,6 +425,11 @@ private:
         if (flight_state_ != FlightState::WAIT_FCU &&
             flight_state_ != FlightState::PRESTREAM &&
             flight_state_ != FlightState::OFFBOARD_ARM) {
+            if (known_goal_mode_ && (current_fcu_state_.mode!="OFFBOARD" || !current_fcu_state_.armed)) {
+                known_lease_.fault();
+                ROS_ERROR_THROTTLE(1,"Known-goal demo mode/arming lost; no automatic re-arm or mode override");
+                return;
+            }
 
             if (current_fcu_state_.mode != "OFFBOARD") {
                 requestOffboard();
@@ -452,7 +494,7 @@ private:
         case FlightState::MAP_WARMUP:
             publishHoldSetpoint();
 
-            if (!cloudFresh(now)) {
+            if (!known_goal_mode_ && !cloudFresh(now)) {
                 printStateThrottled(
                     "waiting for fresh LiDAR data");
                 break;
@@ -467,7 +509,7 @@ private:
         case FlightState::HOVER_READY:
             publishHoldSetpoint();
 
-            if (have_pending_goal_) {
+            if (!known_goal_mode_ && have_pending_goal_) {
                 sendPendingGoalToSuper();
             }
             break;
@@ -526,7 +568,17 @@ private:
                 "[FlightManager] FAILSAFE_HOVER: "
                 "SUPER command lost before reaching goal.");
             break;
+        case FlightState::TRACK_KNOWN:
+            if (known_lease_.fresh(now.toSec())) publishCommand(known_setpoint_);
+            else {
+                setHoldFromCurrentOdometry();
+                transitionTo(FlightState::FAILSAFE_HOVER);
+                publishHoldSetpoint();
+            }
+            break;
         }
+        std_msgs::String state_message;
+        state_message.data=stateName(flight_state_); flight_state_pub_.publish(state_message);
 
         ROS_INFO_STREAM_THROTTLE(
             2.0,
@@ -952,6 +1004,8 @@ private:
             return "FINAL_HOVER";
         case FlightState::FAILSAFE_HOVER:
             return "FAILSAFE_HOVER";
+        case FlightState::TRACK_KNOWN:
+            return "TRACK_KNOWN";
         }
 
         return "UNKNOWN";
@@ -1015,6 +1069,11 @@ private:
     ros::Subscriber user_goal_sub_;
     ros::Subscriber super_setpoint_sub_;
     ros::Subscriber trajectory_sub_;
+    ros::Subscriber known_setpoint_sub_;
+    ros::Publisher flight_state_pub_;
+    bool known_goal_mode_{false};
+    super_px4_bridge::KnownFlightLease known_lease_;
+    mavros_msgs::PositionTarget known_setpoint_;
 
     ros::Publisher mavros_setpoint_pub_;
     ros::Publisher super_goal_pub_;

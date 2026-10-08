@@ -166,3 +166,20 @@ local_registration_current、local_precision_verdict，且始终 grasp_tested=fa
 正常未解锁场景连续 40 s 复测得到 1941 条真值、467 条有效局部配对，
 原点仅冻结一次；位置残差最大约 0.330 m，精度明确 FAIL，不能用于抓取对齐。
 该结果只证明时间配对/漂移可观测性，不证明飞行、物体对齐或抓取已验收。
+
+## 已知目标飞行接管（阶段 2，2026-10-08）
+
+飞行管理器新增 known_goal_mode，默认 false。只有显式开启且 use_sim_time=true 时，
+才绕过雷达等待并接收 /grasp_demo/known_setpoint（KnownFlightSetpoint）。
+正常 SUPER 导航默认路径不改；专用模式独占导航输入，旧包/换任务不能续期或接管，
+输入断流进入故障悬停且不自动恢复，模式/解锁丢失后不自动夺回或重新解锁。
+WorldPlugin 新增同物理步机体线/角速度真值，仅为诊断/仿真输入，不发控制。
+
+PX4 仓库的 src/modules/arm_control/tests/hover/ 包含已知目标配置、纯坐标预览、
+短程飞行测试及隔离接口负例。飞行必须显式传 --execute-flight。
+首版 world 轨迹用 Gazebo 机体真值与 MAVROS 局部估计进行实时控制坐标转换，
+并以速度前馈补偿估计速度偏差；不向 EKF 注入真值，但也不是已经验证真实定位。
+两次无雷达/无锚点、折叠臂到位测试均保持 10 s：世界位置平均误差约 2.2–2.3 cm，
+最大约 3.5 cm，仅通过本阶段 5 cm 粗到位包络。没有机械臂运动或闭爪请求；
+更严格的悬停抓取许可、悬停版 profile、抓取和携物仍未验收。
+完整修改说明集中保存在 PX4 的 SO101_REVIEW.md 阶段 21–22，不再分散新增说明文件。

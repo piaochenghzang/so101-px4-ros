@@ -52,6 +52,15 @@ private:
         if (model) {
             out.vehicle_id=model->GetId();
             identity.push_back(out.vehicle_id);
+            const auto body=model->GetLink("yhang550_base::base_link");
+            if (body) {
+                const auto v=body->WorldLinearVel(), w=body->WorldAngularVel();
+                out.body_velocity_valid=v.IsFinite() && w.IsFinite();
+                if (out.body_velocity_valid) {
+                    out.body_linear_velocity_world.x=v.X(); out.body_linear_velocity_world.y=v.Y(); out.body_linear_velocity_world.z=v.Z();
+                    out.body_angular_velocity_world.x=w.X(); out.body_angular_velocity_world.y=w.Y(); out.body_angular_velocity_world.z=w.Z();
+                }
+            }
             for (const auto &name : links_) {
                 const auto link=model->GetLink(name);
                 if (!link) { identity.push_back(0); continue; }

@@ -16,3 +16,6 @@ string target_name
 bool target_present
 uint64 target_id
 geometry_msgs/Pose target_pose
+bool body_velocity_valid
+geometry_msgs/Vector3 body_linear_velocity_world
+geometry_msgs/Vector3 body_angular_velocity_world

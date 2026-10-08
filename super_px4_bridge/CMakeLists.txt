@@ -21,8 +21,8 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_sensor_msgs
 )
 find_package(gazebo REQUIRED)
-add_message_files(FILES CoordinateTruth.msg)
-generate_messages(DEPENDENCIES std_msgs geometry_msgs)
+add_message_files(FILES CoordinateTruth.msg KnownFlightSetpoint.msg)
+generate_messages(DEPENDENCIES std_msgs geometry_msgs mavros_msgs)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -114,7 +114,7 @@ generate_messages(DEPENDENCIES std_msgs geometry_msgs)
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-  CATKIN_DEPENDS message_runtime std_msgs geometry_msgs
+  CATKIN_DEPENDS message_runtime std_msgs geometry_msgs mavros_msgs
 #  INCLUDE_DIRS include
 #  LIBRARIES super_px4_bridge
 #  CATKIN_DEPENDS geometry_msgs mavros_msgs nav_msgs quadrotor_msgs roscpp sensor_msgs tf2 tf2_geometry_msgs tf2_sensor_msgs
@@ -163,7 +163,7 @@ set_target_properties(so101_coordinate_truth PROPERTIES CXX_STANDARD 14 CXX_STAN
 ## same as for the library above
 add_dependencies(super_sensor_adapter_node ${catkin_EXPORTED_TARGETS})
 add_dependencies(super_mavros_bridge_node ${catkin_EXPORTED_TARGETS})
-add_dependencies(super_flight_manager_node ${catkin_EXPORTED_TARGETS})
+add_dependencies(super_flight_manager_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 ## Specify libraries to link a library or executable target against
 target_link_libraries(super_sensor_adapter_node
   ${catkin_LIBRARIES}
@@ -235,6 +235,8 @@ install(DIRECTORY config/ DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
 if(CATKIN_ENABLE_TESTING)
+  add_executable(test_known_flight_handover tests/test_known_flight_handover.cpp)
+  add_test(NAME known_flight_handover COMMAND test_known_flight_handover)
   add_executable(test_super_command_transition tests/test_command_transition.cpp)
   add_test(NAME super_command_transition COMMAND test_super_command_transition)
   add_test(NAME grasp_frame_math COMMAND ${PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_grasp_frames.py)
