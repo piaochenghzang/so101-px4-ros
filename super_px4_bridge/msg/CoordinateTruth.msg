@@ -19,3 +19,9 @@ geometry_msgs/Pose target_pose
 bool body_velocity_valid
 geometry_msgs/Vector3 body_linear_velocity_world
 geometry_msgs/Vector3 body_angular_velocity_world
+bool gripper_velocity_valid
+geometry_msgs/Vector3 gripper_linear_velocity_world
+geometry_msgs/Vector3 gripper_angular_velocity_world
+bool target_velocity_valid
+geometry_msgs/Vector3 target_linear_velocity_world
+geometry_msgs/Vector3 target_angular_velocity_world

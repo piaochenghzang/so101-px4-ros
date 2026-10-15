@@ -37,6 +37,9 @@ private:
         out.orientation.y=value.Rot().Y(); out.orientation.z=value.Rot().Z();
         return out;
     }
+    static geometry_msgs::Vector3 vector(const ignition::math::Vector3d &v) {
+        geometry_msgs::Vector3 out; out.x=v.X(); out.y=v.Y(); out.z=v.Z(); return out;
+    }
     void sample() {
         const double now=world_->SimTime().Double();
         if (reset_requested_.exchange(false)) { ++epoch_; last_publish_=-1; identity_.clear(); }
@@ -66,6 +69,14 @@ private:
                 if (!link) { identity.push_back(0); continue; }
                 out.link_names.push_back(name); out.link_ids.push_back(link->GetId());
                 out.link_poses.push_back(pose(link->WorldPose())); identity.push_back(link->GetId());
+                if (name=="so101::gripper_link") {
+                    const auto v=link->WorldLinearVel(), w=link->WorldAngularVel();
+                    out.gripper_velocity_valid=v.IsFinite() && w.IsFinite();
+                    if (out.gripper_velocity_valid) {
+                        out.gripper_linear_velocity_world=vector(v);
+                        out.gripper_angular_velocity_world=vector(w);
+                    }
+                }
             }
             // Static Joint::Position() is a cached scalar, not an ODE encoder.
             // Never read it or invent zero angles to pass an FK check.
@@ -81,6 +92,19 @@ private:
         if (object) {
             out.target_present=true; out.target_id=object->GetId();
             out.target_pose=pose(object->WorldPose());
+            // This fixture observes a single rigid cube. Missing/multi-link
+            // targets stay invalid rather than inventing a zero velocity.
+            const auto links=object->GetLinks();
+            if (links.size()==1) {
+                const auto offset=links[0]->WorldPose().Rot().RotateVectorReverse(
+                    object->WorldPose().Pos()-links[0]->WorldPose().Pos());
+                const auto v=links[0]->WorldLinearVel(offset), w=links[0]->WorldAngularVel();
+                out.target_velocity_valid=v.IsFinite() && w.IsFinite();
+                if (out.target_velocity_valid) {
+                    out.target_linear_velocity_world=vector(v);
+                    out.target_angular_velocity_world=vector(w);
+                }
+            }
         }
         identity.push_back(out.target_id);
         if (!identity_.empty() && identity != identity_) ++epoch_;
