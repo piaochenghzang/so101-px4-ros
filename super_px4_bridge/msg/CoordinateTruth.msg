@@ -25,3 +25,6 @@ geometry_msgs/Vector3 gripper_angular_velocity_world
 bool target_velocity_valid
 geometry_msgs/Vector3 target_linear_velocity_world
 geometry_msgs/Vector3 target_angular_velocity_world
+bool approach_geometry_valid
+float64 arm_obstacle_clearance
+bool arm_external_contact
