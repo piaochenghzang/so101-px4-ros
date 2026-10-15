@@ -21,7 +21,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_sensor_msgs
 )
 find_package(gazebo REQUIRED)
-add_message_files(FILES CoordinateTruth.msg KnownFlightSetpoint.msg)
+add_message_files(FILES CoordinateTruth.msg KnownFlightSetpoint.msg KnownFlightStatus.msg)
 generate_messages(DEPENDENCIES std_msgs geometry_msgs mavros_msgs)
 
 ## System dependencies are found with CMake's conventions

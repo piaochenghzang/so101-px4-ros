@@ -16,6 +16,7 @@
 #include <super_px4_bridge/command_transition.h>
 #include <super_px4_bridge/known_flight_handover.h>
 #include <super_px4_bridge/KnownFlightSetpoint.h>
+#include <super_px4_bridge/KnownFlightStatus.h>
 #include <std_msgs/String.h>
 
 
@@ -68,6 +69,7 @@ public:
         resolved_goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(
             "/planning/resolved_goal", 1, true);
         flight_state_pub_=nh_.advertise<std_msgs::String>("/grasp_demo/flight_state",1,true);
+        known_status_pub_=nh_.advertise<super_px4_bridge::KnownFlightStatus>("/grasp_demo/known_status",1);
         known_setpoint_sub_=nh_.subscribe("/grasp_demo/known_setpoint",20,
             &SuperFlightManager::knownSetpointCallback,this);
         trajectory_sub_ = nh_.subscribe("/planning_cmd/poly_traj", 50,
@@ -220,6 +222,7 @@ private:
         const mavros_msgs::StateConstPtr &msg)
     {
         current_fcu_state_ = *msg;
+        last_fcu_time_=ros::Time::now();
         have_fcu_state_ = true;
     }
 
@@ -303,7 +306,10 @@ private:
             && std::isfinite(p.yaw) && motion.position[2]>=.3 && motion.position[2]<=2.5
             && super_px4_bridge::distance(motion.position,positionOf(current_odom_.pose.pose.position))<=1.0
             && super_px4_bridge::distance(motion.velocity,super_px4_bridge::Vec3{{0,0,0}})<=1.0;
-        if (!known_lease_.accept(msg->task_id,msg->header.stamp.toSec(),ros::Time::now().toSec(),valid)) return;
+        auto binding=known_binding_;
+        if (!known_lease_.accept(msg->task_id,msg->header.stamp.toSec(),ros::Time::now().toSec(),
+            valid && binding.accept(msg->plan_id,msg->target_id,msg->scene_id,msg->terminal_hold))) return;
+        known_binding_=binding;
         known_setpoint_=p;
         if (flight_state_!=FlightState::TRACK_KNOWN) transitionTo(FlightState::TRACK_KNOWN);
     }
@@ -392,6 +398,17 @@ private:
         const ros::TimerEvent &)
     {
         const ros::Time now = ros::Time::now();
+        if (known_goal_mode_) {
+            super_px4_bridge::KnownFlightStatus s; s.header.stamp=now; s.header.frame_id="map";
+            s.task_id=known_lease_.id; s.plan_id=known_binding_.plan;
+            s.target_id=known_binding_.target; s.scene_id=known_binding_.scene;
+            s.command_stamp=known_setpoint_.header.stamp; s.terminal_hold=known_binding_.terminal;
+            s.lease_valid=flight_state_==FlightState::TRACK_KNOWN && known_lease_.fresh(now.toSec()) &&
+                have_fcu_state_ && current_fcu_state_.connected && current_fcu_state_.armed &&
+                current_fcu_state_.mode=="OFFBOARD" && now>=last_fcu_time_ &&
+                (now-last_fcu_time_).toSec()<=1.2 && odomFresh(now);
+            known_status_pub_.publish(s);
+        }
 
         if (!have_fcu_state_ ||
             !current_fcu_state_.connected) {
@@ -1071,8 +1088,11 @@ private:
     ros::Subscriber trajectory_sub_;
     ros::Subscriber known_setpoint_sub_;
     ros::Publisher flight_state_pub_;
+    ros::Publisher known_status_pub_;
+    ros::Time last_fcu_time_;
     bool known_goal_mode_{false};
     super_px4_bridge::KnownFlightLease known_lease_;
+    super_px4_bridge::KnownTaskBinding known_binding_;
     mavros_msgs::PositionTarget known_setpoint_;
 
     ros::Publisher mavros_setpoint_pub_;
