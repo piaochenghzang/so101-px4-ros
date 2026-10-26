@@ -195,8 +195,13 @@ private:
         pnh_.param("auto_arm",
                    auto_arm_, true);
         pnh_.param("known_goal_mode", known_goal_mode_, false);
-        if (known_goal_mode_ && !nh_.param<bool>("/use_sim_time", false)) {
-            throw std::invalid_argument("known_goal_mode is simulation-only and requires use_sim_time");
+        pnh_.param("allow_terminal_known_handover", allow_terminal_known_handover_, false);
+        if (known_goal_mode_ && allow_terminal_known_handover_) {
+            throw std::invalid_argument("known_goal_mode and SUPER terminal handover are mutually exclusive");
+        }
+        if ((known_goal_mode_ || allow_terminal_known_handover_) &&
+            !nh_.param<bool>("/use_sim_time", false)) {
+            throw std::invalid_argument("Known-target handover is simulation-only and requires use_sim_time");
         }
         pnh_.param("handover_time", handover_time_, 1.0);
         pnh_.param("settle_timeout", settle_timeout_, 6.0);
@@ -292,9 +297,17 @@ private:
 
     void knownSetpointCallback(const super_px4_bridge::KnownFlightSetpointConstPtr &msg)
     {
-        if (!known_goal_mode_ || known_lease_.failed) return;
-        if (flight_state_!=FlightState::HOVER_READY && flight_state_!=FlightState::FINAL_HOVER
-            && flight_state_!=FlightState::TRACK_KNOWN) return;
+        if ((!known_goal_mode_ && !allow_terminal_known_handover_) || known_lease_.failed) return;
+        if (known_goal_mode_) {
+            if (flight_state_!=FlightState::HOVER_READY && flight_state_!=FlightState::FINAL_HOVER
+                && flight_state_!=FlightState::TRACK_KNOWN) return;
+        } else {
+            // SUPER must finish and settle first. Subsequent centimeter-level
+            // refinement reuses the existing lease/binding; planning can never
+            // be preempted by an early grasp packet.
+            if (flight_state_!=FlightState::FINAL_HOVER && flight_state_!=FlightState::TRACK_KNOWN) return;
+            if (flight_state_==FlightState::FINAL_HOVER && !have_active_goal_) return;
+        }
         const auto &p=msg->setpoint; const auto motion=motionOf(p);
         const uint16_t mask=mavros_msgs::PositionTarget::IGNORE_AFX |
             mavros_msgs::PositionTarget::IGNORE_AFY | mavros_msgs::PositionTarget::IGNORE_AFZ |
@@ -398,7 +411,7 @@ private:
         const ros::TimerEvent &)
     {
         const ros::Time now = ros::Time::now();
-        if (known_goal_mode_) {
+        if (known_goal_mode_ || allow_terminal_known_handover_) {
             super_px4_bridge::KnownFlightStatus s; s.header.stamp=now; s.header.frame_id="map";
             s.task_id=known_lease_.id; s.plan_id=known_binding_.plan;
             s.target_id=known_binding_.target; s.scene_id=known_binding_.scene;
@@ -412,14 +425,14 @@ private:
 
         if (!have_fcu_state_ ||
             !current_fcu_state_.connected) {
-            if (known_goal_mode_ && known_lease_.id) known_lease_.fault();
+            if ((known_goal_mode_ || allow_terminal_known_handover_) && known_lease_.id) known_lease_.fault();
 
             printStateThrottled("waiting for FCU");
             return;
         }
 
         if (!odomFresh(now)) {
-            if (known_goal_mode_ && known_lease_.id) known_lease_.fault();
+            if ((known_goal_mode_ || allow_terminal_known_handover_) && known_lease_.id) known_lease_.fault();
             printStateThrottled("waiting for odometry");
             return;
         }
@@ -442,7 +455,8 @@ private:
         if (flight_state_ != FlightState::WAIT_FCU &&
             flight_state_ != FlightState::PRESTREAM &&
             flight_state_ != FlightState::OFFBOARD_ARM) {
-            if (known_goal_mode_ && (current_fcu_state_.mode!="OFFBOARD" || !current_fcu_state_.armed)) {
+            if ((known_goal_mode_ || flight_state_==FlightState::TRACK_KNOWN) &&
+                (current_fcu_state_.mode!="OFFBOARD" || !current_fcu_state_.armed)) {
                 known_lease_.fault();
                 ROS_ERROR_THROTTLE(1,"Known-goal demo mode/arming lost; no automatic re-arm or mode override");
                 return;
@@ -1091,6 +1105,7 @@ private:
     ros::Publisher known_status_pub_;
     ros::Time last_fcu_time_;
     bool known_goal_mode_{false};
+    bool allow_terminal_known_handover_{false};
     super_px4_bridge::KnownFlightLease known_lease_;
     super_px4_bridge::KnownTaskBinding known_binding_;
     mavros_msgs::PositionTarget known_setpoint_;

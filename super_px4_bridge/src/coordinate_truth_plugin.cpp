@@ -24,6 +24,7 @@ public:
         }
         world_ = world;
         approach_guard_=sdf->HasElement("approachGuard") && sdf->Get<bool>("approachGuard");
+        fine_guard_=approach_guard_ && sdf->HasElement("fixedGraspGuard") && sdf->Get<bool>("fixedGraspGuard");
         if (approach_guard_) world_->Physics()->GetContactManager()->SetNeverDropContacts(true);
         if (sdf->HasElement("vehicleName")) vehicle_ = sdf->Get<std::string>("vehicleName");
         if (sdf->HasElement("targetName")) target_ = sdf->Get<std::string>("targetName");
@@ -59,12 +60,18 @@ private:
         if (!approach_guard_ || !model) return;
         const auto cube=world_->ModelByName(target_), support=world_->ModelByName("cube_support");
         if (!cube || cube->IsStatic() || !support || !support->IsStatic()) return;
-        for (const auto &m:world_->Models()) if (m!=model && m!=cube && m!=support &&
-            m->GetName()!="ground_plane" && m->GetName()!="asphalt_plane") return;
         std::vector<physics::CollisionPtr> obstacles;
         for (const auto &m:{cube,support}) for (const auto &l:m->GetLinks())
             for (const auto &c:l->GetCollisions()) obstacles.push_back(c);
         if (obstacles.size()!=2) return;
+        for (const auto &m:world_->Models()) {
+            if (m==model || m==cube || m==support || m->GetName()=="ground_plane" ||
+                m->GetName()=="asphalt_plane") continue;
+            if (m->GetName().rfind("demo_obstacle_",0)!=0 || !m->IsStatic()) return;
+            const auto before=obstacles.size();
+            for (const auto &l:m->GetLinks()) for (const auto &c:l->GetCollisions()) obstacles.push_back(c);
+            if (obstacles.size()==before) return;
+        }
         // The production empty world contains BOTH ground_plane and a 0.1 m
         // asphalt box. Include the box, do not pretend ground is always z=0.
         const auto asphalt=world_->ModelByName("asphalt_plane");
@@ -98,17 +105,123 @@ private:
         out.approach_geometry_valid=true; out.arm_obstacle_clearance=clearance;
         out.arm_external_contact=contact_seen_; contact_seen_=false;
     }
+    static double boxGap(const ignition::math::Pose3d &p,const ignition::math::Vector3d &half,
+        physics::CollisionPtr other,const ignition::math::Pose3d &frame) {
+        const auto t=frame.Inverse()*p;ignition::math::Vector3d e;
+        for (int i=0;i<3;++i) { ignition::math::Vector3d a;a[i]=half[i];
+            const auto r=t.Rot().RotateVector(a);for(int j=0;j<3;++j)e[j]+=std::abs(r[j]); }
+        ignition::math::Vector3d a,b;
+        const auto box=boost::dynamic_pointer_cast<physics::BoxShape>(other->GetShape());
+        if (!box) return -1;
+        const auto o=frame.Inverse()*other->WorldPose();const auto h=box->Size()*.5;
+        ignition::math::Vector3d f;
+        for(int i=0;i<3;++i) { ignition::math::Vector3d d;d[i]=h[i];
+            const auto r=o.Rot().RotateVector(d);for(int j=0;j<3;++j)f[j]+=std::abs(r[j]); }
+        a=o.Pos()-f;b=o.Pos()+f;double squared=0;
+        for(int j=0;j<3;++j) { const double gap=std::max({a[j]-(t.Pos()[j]+e[j]),t.Pos()[j]-e[j]-b[j],0.});squared+=gap*gap; }
+        return std::sqrt(squared);
+    }
+    void fineGeometry(super_px4_bridge::CoordinateTruth &out,physics::ModelPtr model) {
+        if (!fine_guard_ || !out.approach_geometry_valid || !model || model->GetJoint("bench_anchor")) return;
+        const auto cube=world_->ModelByName(target_),support=world_->ModelByName("cube_support");
+        const auto jaw=model->GetLink("so101::moving_jaw_so101_v1_link");
+        const auto joint=model->GetJoint("so101::gripper");
+        if (!cube || !support || !jaw || !joint || std::abs(joint->LowerLimit(0)-.04)>1e-6 ||
+            std::abs(joint->UpperLimit(0)-.3)>1e-6) return;
+        const auto target=cube->GetLink("link"),plate=support->GetLink("link");
+        if (!target || !plate || target->GetCollisions().size()!=1 || plate->GetCollisions().size()!=1) return;
+        const auto cb=boost::dynamic_pointer_cast<physics::BoxShape>(target->GetCollisions()[0]->GetShape());
+        const auto sb=boost::dynamic_pointer_cast<physics::BoxShape>(plate->GetCollisions()[0]->GetShape());
+        if (!cb || !sb || (cb->Size()-ignition::math::Vector3d(.02,.02,.02)).Length()>1e-6 ||
+            ((sb->Size()-ignition::math::Vector3d(.004,.024,.004)).Length()>1e-6 &&
+             (sb->Size()-ignition::math::Vector3d(.008,.024,.004)).Length()>1e-6)) return;
+        double slack=100.;unsigned count=0;
+        std::vector<physics::CollisionPtr> obstacles{target->GetCollisions()[0],plate->GetCollisions()[0]};
+        const auto asphalt=world_->ModelByName("asphalt_plane");
+        if(asphalt)for(const auto &l:asphalt->GetLinks())for(const auto &c:l->GetCollisions())obstacles.push_back(c);
+        for(const auto &m:world_->Models())if(m->GetName().rfind("demo_obstacle_",0)==0) {
+            if(!m->IsStatic())return;
+            const auto before=obstacles.size();
+            for(const auto &l:m->GetLinks())for(const auto &c:l->GetCollisions())obstacles.push_back(c);
+            if(obstacles.size()==before)return;
+        }
+        auto inspect=[&](physics::CollisionPtr col,const ignition::math::Pose3d &p,double reserve) {
+            const auto box=boost::dynamic_pointer_cast<physics::BoxShape>(col->GetShape());
+            if (!box || !p.Pos().IsFinite() || !p.Rot().IsFinite()) { slack=-100.;return; }
+            const auto h=box->Size()*.5;ignition::math::Vector3d extent;
+            for(int i=0;i<3;++i) { ignition::math::Vector3d v;v[i]=h[i];
+                const auto r=p.Rot().RotateVector(v);for(int j=0;j<3;++j)extent[j]+=std::abs(r[j]); }
+            slack=std::min(slack,p.Pos().Z()-extent.Z()-.016-reserve);
+            const bool pad=col->GetName()=="gripper_fixed_finger_collision" || col->GetName()=="moving_jaw_collision";
+            for(const auto &o:obstacles) {
+                if(pad && o==obstacles[0])continue; // Exact target and exact two pads ONLY.
+                const double required=pad && o==obstacles[1] ? .003 : .016;
+                const double world=boxGap(p,h,o,ignition::math::Pose3d::Zero);
+                const double aligned=boxGap(p,h,o,cube->WorldPose());
+                if(world<0 || aligned<0) { slack=-100.;return; }
+                slack=std::min(slack,std::max(world,aligned)-required-reserve);
+            }
+        };
+        for(const auto &l:model->GetLinks()) {
+            if(l->GetName().find("so101::")!=0)continue;
+            for(const auto &col:l->GetCollisions()) { ++count;inspect(col,col->WorldPose(),0); }
+        }
+        const auto moving=jaw->GetCollision("moving_jaw_collision");
+        if (!moving || !std::isfinite(joint->Position(0)))return;
+        // Certify the full configured jaw stroke, including free closure after
+        // object loss. Sample error is bounded by radius * half angular spacing.
+        const auto mb=boost::dynamic_pointer_cast<physics::BoxShape>(moving->GetShape());
+        if(!mb)return;
+        const double radius=moving->RelativePose().Pos().Length()+mb->Size().Length()*.5;
+        // Approach with the jaw OPEN: reserve pending opening, not a closure
+        // that has not been requested. The independent full-stroke certificate
+        // below remains mandatory before and throughout controlled closure.
+        const double actual_slack=slack;
+        inspect(moving,moving->WorldPose(),radius*std::abs(.3-joint->Position(0)));
+        const double open_slack=slack;slack=actual_slack;
+        const auto zero=jaw->WorldPose()*ignition::math::Pose3d(0,0,0,0,joint->Position(0),0);
+        for(int k=0;k<=52;++k) {
+            const double q=.04+.26*k/52.;
+            inspect(moving,zero*ignition::math::Pose3d(0,0,0,0,-q,0)*moving->RelativePose(),radius*.0025);
+        }
+        if(count!=8 || !std::isfinite(slack) || !std::isfinite(open_slack))return;
+        out.fixed_grasp_geometry_valid=true;
+        out.fixed_grasp_clearance=slack+.016; // minimum PAIR-SPECIFIC slack +16mm
+        out.fixed_grasp_current_clearance=open_slack+.016;
+        out.fixed_grasp_forbidden_contact=fine_contact_seen_;fine_contact_seen_=false;
+        out.fixed_grasp_contact_frames=fine_frames_;
+        out.fixed_grasp_bilateral_fraction=double(fine_both_)/std::max(1u,fine_frames_);
+        out.fixed_grasp_support_fraction=double(fine_support_)/std::max(1u,fine_frames_);
+    }
     void sample() {
         const double now=world_->SimTime().Double();
         if (approach_guard_) {
             const auto manager=world_->Physics()->GetContactManager();
+            bool fixed_contact=false,moving_contact=false,support_contact=false;
             for (unsigned i=0;i<manager->GetContactCount();++i) {
                 const auto c=manager->GetContact(i); if (!c || !c->collision1 || !c->collision2) continue;
                 const auto a=c->collision1->GetScopedName(), b=c->collision2->GetScopedName();
                 const bool arm_a=a.find(vehicle_+"::so101::")==0, arm_b=b.find(vehicle_+"::so101::")==0;
                 const bool vehicle_a=a.find(vehicle_+"::")==0, vehicle_b=b.find(vehicle_+"::")==0;
+                if (fine_guard_) {
+                    const auto &other=a==target_+"::link::collision" ? b : a;
+                    const bool target_contact=a==target_+"::link::collision" || b==target_+"::link::collision";
+                    if(target_contact) {
+                        fixed_contact|=other==vehicle_+"::so101::gripper_link::gripper_fixed_finger_collision";
+                        moving_contact|=other==vehicle_+"::so101::moving_jaw_so101_v1_link::moving_jaw_collision";
+                        support_contact|=other=="cube_support::link::collision";
+                    }
+                }
                 contact_seen_|=(arm_a && !vehicle_b) || (arm_b && !vehicle_a);
+                if ((arm_a && !vehicle_b) || (arm_b && !vehicle_a)) {
+                    const auto &arm=arm_a ? a : b;const auto &other=arm_a ? b : a;
+                    const bool pad=arm==vehicle_+"::so101::gripper_link::gripper_fixed_finger_collision" ||
+                        arm==vehicle_+"::so101::moving_jaw_so101_v1_link::moving_jaw_collision";
+                    const bool allowed=pad && other==target_+"::link::collision";
+                    fine_contact_seen_|=!allowed;
+                }
             }
+            if(fine_guard_) { ++fine_frames_;fine_both_+=fixed_contact && moving_contact;fine_support_+=support_contact; }
         }
         if (reset_requested_.exchange(false)) { ++epoch_; last_publish_=-1; identity_.clear(); }
         if (last_time_ >= 0 && now < last_time_) { ++epoch_; last_publish_=-1; identity_.clear(); }
@@ -120,6 +233,8 @@ private:
         out.source_instance=instance_; out.vehicle_name=vehicle_; out.target_name=target_;
         const auto model=world_->ModelByName(vehicle_);
         approachGeometry(out,model);
+        fineGeometry(out,model);
+        fine_frames_=fine_both_=fine_support_=0;
         std::vector<uint64_t> identity;
         if (model) {
             out.vehicle_id=model->GetId();
@@ -194,6 +309,8 @@ private:
     std::vector<uint64_t> identity_;
     uint64_t epoch_{1};
     bool approach_guard_{false},contact_seen_{false};
+    bool fine_guard_{false},fine_contact_seen_{false};
+    unsigned fine_frames_{0},fine_both_{0},fine_support_{0};
     double last_time_{-1}, last_publish_{-1};
 };
 GZ_REGISTER_WORLD_PLUGIN(CoordinateTruthPlugin)

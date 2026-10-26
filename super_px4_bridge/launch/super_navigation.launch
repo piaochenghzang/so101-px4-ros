@@ -2,10 +2,17 @@
 
 <launch>
 
+  <arg name="use_sensor_adapter" default="true"/>
+  <arg name="start_flight_manager" default="true"/>
+  <arg name="planner_config" default="$(find super_px4_bridge)/config/px4_sim.yaml"/>
+  <arg name="map_cloud_topic" default="/cloud_registered"/>
+  <arg name="map_odom_topic" default="/lidar_slam/odom"/>
+
   <!-- Sensor adapter -->
   <node pkg="super_px4_bridge"
         type="super_sensor_adapter_node"
         name="super_sensor_adapter_node"
+        if="$(arg use_sensor_adapter)"
         output="screen">
 
     <param name="cloud_topic"
@@ -44,8 +51,12 @@
         name="fsm_node"
         output="screen">
 
+    <!-- External FAST-LIO can supply its already registered world cloud. -->
+    <remap from="/cloud_registered" to="$(arg map_cloud_topic)"/>
+    <remap from="/lidar_slam/odom" to="$(arg map_odom_topic)"/>
+
     <param name="config_path"
-           value="$(find super_px4_bridge)/config/px4_sim.yaml"/>
+           value="$(arg planner_config)"/>
   </node>
 
 
@@ -67,6 +78,7 @@
   <node pkg="super_px4_bridge"
         type="super_flight_manager_node"
         name="super_flight_manager_node"
+        if="$(arg start_flight_manager)"
         output="screen">
 
     <param name="state_topic"

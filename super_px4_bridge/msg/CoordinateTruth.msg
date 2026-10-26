@@ -28,3 +28,11 @@ geometry_msgs/Vector3 target_angular_velocity_world
 bool approach_geometry_valid
 float64 arm_obstacle_clearance
 bool arm_external_contact
+# Explicit fine-grasp diagnostic; old no-close fields remain unchanged.
+bool fixed_grasp_geometry_valid
+float64 fixed_grasp_clearance # min pair-specific slack +16mm, not raw distance
+float64 fixed_grasp_current_clearance # actual arm + pending jaw opening, same 3/16mm rules
+bool fixed_grasp_forbidden_contact
+uint32 fixed_grasp_contact_frames
+float64 fixed_grasp_bilateral_fraction
+float64 fixed_grasp_support_fraction
