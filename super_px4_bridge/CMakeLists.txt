@@ -247,6 +247,8 @@ if(CATKIN_ENABLE_TESTING)
   add_test(NAME super_command_transition COMMAND test_super_command_transition)
   add_test(NAME grasp_frame_math COMMAND ${PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_grasp_frames.py)
   add_test(NAME mid360s_static_math COMMAND ${PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_mid360s_static.py)
+  add_test(NAME static_target_math COMMAND ${PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_static_target.py)
+  set_tests_properties(static_target_math PROPERTIES ENVIRONMENT "OPENBLAS_NUM_THREADS=1;OMP_NUM_THREADS=1")
   add_test(NAME grasp_frame_callbacks COMMAND ${CATKIN_DEVEL_PREFIX}/env.sh
     ${PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_frame_observer.py)
 endif()

@@ -1,0 +1,32 @@
+# S3 offline static-target prototype. No control permissions or ROS publishers.
+schema_version: 1
+frame: mid360s_lidar
+# A common coarse forward search volume, unchanged for every S2 range/noise/negative case.
+# Bounds are in L, not centered from Gazebo target position.
+roi_min_m: [0.4, -1.2, -0.6]
+roi_max_m: [4.0, 1.2, 0.6]
+voxel_m: 0.005
+plane_distance_m: 0.018
+plane_min_points: 100
+plane_min_extent_m: 0.30
+plane_iterations: 128
+plane_rounds: 8
+plane_connectivity_m: 0.04
+cluster_radius_m: 0.025
+cluster_min_points: 60
+cluster_max_points: 800
+cluster_max_diagonal_m: 0.25
+model_sample_m: 0.008
+upright_tilt_limit_deg: 35.0  # Explicit known-object placement prior, relative to measured IMU up.
+yaw_seed_step_deg: 15
+optimizer_iterations: 55
+huber_m: 0.010
+inlier_distance_m: 0.015
+min_inlier_fraction: 0.80
+max_fit_rms_m: 0.010
+min_key_points: 6
+max_key_reverse_rms_m: 0.015
+ambiguity_score_gap_m: 0.0015
+different_pose_angle_deg: 10.0
+different_pose_translation_m: 0.015
+seed: 19
