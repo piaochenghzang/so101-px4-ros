@@ -10,7 +10,7 @@ import yaml
 import rosbag
 from scan_metrics import cloud_array, xyz, point_times
 from check_installation import BRIDGE, inverse, pose_transform
-from static_target import estimate, shape_from_geometry, rotation_angle
+from static_target import estimate, shape_from_geometry, rotation_angle, candidate_points
 
 
 def save(path,value):
@@ -35,7 +35,8 @@ def read_raw(path,start_s,duration_s):
         keep=(t>=begin)&(t<end); arrays.append(xyz(a)[keep]); times.append(t[keep])
     if np.any(np.diff(frame_stamps)!=100_000_000) or frame_stamps[-1]+100_000_000<end:
         raise ValueError('Missing, duplicate or incomplete raw frames')
-    if not imus or max(m.header.stamp.to_nsec() for m in imus)<end:
+    if (not imus or imus[0].header.stamp.to_nsec()>begin or
+            imus[-1].header.stamp.to_nsec()<end):
         raise ValueError('Window not bracketed by IMU')
     selected_imu=[m for m in imus if begin<=m.header.stamp.to_nsec()<=end]
     if np.any(np.diff([m.header.stamp.to_nsec() for m in imus])!=5_000_000):
@@ -81,9 +82,17 @@ def score_after_estimation(dataset,case,begin,end,report,remaining,groups):
         evaluation.update(translation_error_m=error,rotation_error_deg=angle,
             meets_3mm_5deg=bool(visible and report['valid'] and error<=.003 and angle<=5))
         lookup={tuple(point):int(label) for stamp,batch in raw_by_stamp.items() for point,label in zip(batch,by_stamp[stamp])}
-        chosen=groups[best['cluster']]
-        chosen_labels=[lookup[tuple(p)] for p in chosen]
-        evaluation['segmentation_target_fraction']=sum(1<=label<=3 for label in chosen_labels)/len(chosen_labels)
+        original=groups[best['cluster']]; chosen=candidate_points(report,groups)
+        before=np.array([lookup[tuple(p)] for p in original]); after=np.array([lookup[tuple(p)] for p in chosen])
+        count=lambda labels:{str(int(i)):int(np.sum(labels==i)) for i in np.unique(labels)}
+        target_before=int(np.sum((before>=1)&(before<=3)))
+        target_after=int(np.sum((after>=1)&(after<=3)))
+        support_before=int(np.sum(before==4)); support_after=int(np.sum(after==4))
+        evaluation.update(segmentation_before_target_fraction=target_before/len(before),
+            segmentation_target_fraction=target_after/len(after),
+            segmentation_label_counts_before=count(before),segmentation_label_counts_after=count(after),
+            retained_target_fraction=target_after/target_before if target_before else None,
+            removed_support_fraction=(support_before-support_after)/support_before if support_before else None)
     return evaluation
 
 
@@ -107,7 +116,8 @@ def main():
         no_world_target_pose_roi_or_initialization=True,oracle_only_after_estimate=True,
         no_publishers_or_control_commands=True,static_simulation_only=True,
         parent_dataset=str(args.dataset.resolve()),hashes={str(p):hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in [args.config,args.geometry,Path(__file__),Path(__file__).with_name('static_target.py')]})
+            for p in [args.config,args.geometry,Path(__file__),Path(__file__).with_name('static_target.py'),
+                Path(__file__).with_name('check_installation.py'),Path(__file__).with_name('scan_metrics.py')]})
     save(args.output/'manifest.json',manifest)
     (args.output/'config_used.yaml').write_bytes(args.config.read_bytes())
     local_model={'target':{'parts':[{k:p[k] for k in ('name','size_m','xyz_rpy_deg')} for p in geometry['target']['parts']]}}
@@ -120,8 +130,9 @@ def main():
             report,remaining,groups=estimate(points,parts,cfg,source['imu_up_lidar']); report['source_observation']=source
             # Persist inference BEFORE reading any scene or semantic scoring topic.
             save(folder/'estimate.json',report)
-            chosen=groups[report['best']['cluster']] if report['best'] else np.empty((0,3))
-            np.savez_compressed(folder/'segmentation.npz',remaining=remaining,candidate=chosen)
+            chosen=candidate_points(report,groups)
+            original=groups[report['best']['cluster']] if report['best'] else np.empty((0,3))
+            np.savez_compressed(folder/'segmentation.npz',remaining=remaining,candidate=chosen,raw_candidate=original)
             evaluation=score_after_estimation(args.dataset,case,source['observation_start_ns'],source['observation_end_ns'],report,remaining,groups)
             save(folder/'evaluation.json',evaluation)
             row=dict(case=case,start_s=start,window_s=args.window,valid=report['valid'],reasons=report['reasons'],
@@ -141,6 +152,17 @@ def main():
         accepted_rotation_p95_deg=float(np.quantile([r['evaluation']['rotation_error_deg'] for r in accepted],.95)) if accepted else None,
         demo_alignment_windows=sum(r['evaluation']['meets_3mm_5deg'] for r in records),
         flight_or_grasp_ready=False,real_device_validated=False)
+    # Repeatability is a diagnostic, not calibrated uncertainty or control permission.
+    repeat=[]
+    for i,a in enumerate(records):
+        for b in records[i+1:]:
+            if a['case']!=b['case'] or not a['best'] or not b['best']: continue
+            if min(a['start_s']+a['window_s'],b['start_s']+b['window_s'])>max(a['start_s'],b['start_s'])+1e-9: continue
+            repeat.append(dict(case=a['case'],starts_s=[a['start_s'],b['start_s']],
+                both_quality_accepted=a['valid'] and b['valid'],
+                translation_delta_m=float(np.linalg.norm(np.array(a['best']['position_lidar_m'])-b['best']['position_lidar_m'])),
+                rotation_delta_deg=rotation_angle(np.array(a['best']['R']).T@np.array(b['best']['R']))))
+    summary['disjoint_window_repeatability']=repeat
     save(args.output/'result.json',summary)
     return 0
 

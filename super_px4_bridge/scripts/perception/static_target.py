@@ -20,6 +20,10 @@ def validate_config(cfg):
     for key in ('plane_min_points','plane_iterations','plane_rounds','cluster_min_points','cluster_max_points',
                 'optimizer_iterations','min_key_points','yaw_seed_step_deg'):
         if type(cfg[key]) is not int or cfg[key]<=0: raise ValueError('Invalid '+key)
+    if (not 0<=cfg['coarse_base_fraction']<.5 or
+            not math.isfinite(cfg['coarse_base_max_height_m']) or cfg['coarse_base_max_height_m']<=0 or
+            type(cfg['ray_refine']) is not bool):
+        raise ValueError('Invalid coarse base band or ray refinement')
     if (cfg['cluster_min_points']>cfg['cluster_max_points'] or not 0<cfg['min_inlier_fraction']<=1 or
             not 0<cfg['upright_tilt_limit_deg']<90 or 360%cfg['yaw_seed_step_deg']):
         raise ValueError('Invalid limits or yaw sampling')
@@ -124,6 +128,34 @@ def clusters(points, radius):
     return sorted(groups,key=len,reverse=True)
 
 
+def coarse_candidate(points,cfg,up):
+    """Bounded lower-band exclusion for this near-upright, rigid target profile.
+
+    Uses measured gravity and candidate heights only, never support dimensions or
+    scene labels. Some object edge points can be removed too; this is not semantic
+    support segmentation. A tall/unclear band is retained rather than cut deeper.
+    """
+    keep=np.ones(len(points),dtype=bool)
+    record=dict(method='bounded_lower_height_band',excluded_indices=[],band_height_m=0.,
+                applied=False)
+    if not len(points) or cfg['coarse_base_fraction']==0: return keep,record
+    height=points@up; cutoff=float(np.quantile(height,cfg['coarse_base_fraction']))
+    band=cutoff-float(np.min(height)); record['band_height_m']=band
+    if band>cfg['coarse_base_max_height_m']:
+        record['reason']='base_band_too_tall'; return keep,record
+    keep=height>cutoff
+    record.update(applied=True,excluded_indices=np.flatnonzero(~keep).tolist())
+    return keep,record
+
+
+def candidate_points(report,groups):
+    if report['best'] is None: return np.empty((0,3))
+    index=report['best']['cluster']; raw=groups[index]
+    keep=np.ones(len(raw),dtype=bool)
+    keep[report['clusters'][index]['coarse']['excluded_indices']]=False
+    return raw[keep]
+
+
 def distances(local, parts):
     values=[]
     for part in parts:
@@ -137,20 +169,47 @@ def residual(points,R,t,parts):
     return np.min(distances((points-t)@R,parts),axis=1)
 
 
+def ray_ranges(points,R,t,parts):
+    """First positive ray/known-box union intersection in the LiDAR frame."""
+    ranges=np.linalg.norm(points,axis=1)
+    if np.any(ranges<=0): raise ValueError('Ray starts at the LiDAR origin')
+    origin=-R.T@t; directions=(points/ranges[:,None])@R; entries=[]
+    for part in parts:
+        o=(origin-part['center'])@part['R']; d=directions@part['R']
+        parallel=abs(d)<1e-12; safe=np.where(parallel,1.,d)
+        a=(-part['half']-o)/safe; b=(part['half']-o)/safe
+        lower=np.where(parallel,-np.inf,np.minimum(a,b))
+        upper=np.where(parallel,np.inf,np.maximum(a,b))
+        near=np.max(lower,axis=1); far=np.min(upper,axis=1)
+        inside_parallel=np.all(~parallel|(abs(o)<=part['half']),axis=1)
+        valid=inside_parallel&(far>=np.maximum(near,0))
+        entries.append(np.where(valid,np.where(near>0,near,far),np.inf))
+    return np.min(entries,axis=0)
+
+
+def range_residual(points,R,t,parts):
+    # S2 perturbs range along each beam. Surface-nearest distance alone can
+    # instead pull edge returns onto neighboring faces, biasing the pose.
+    predicted=ray_ranges(points,R,t,parts); hit=np.isfinite(predicted)
+    r=residual(points,R,t,parts)  # Geometric fallback steers initially missed rays.
+    r[hit]=predicted[hit]-np.linalg.norm(points[hit],axis=1)
+    return r
+
+
 def huber(r, scale):
     a=abs(r)
     return np.where(a<=scale,r*r,2*scale*a-scale**2)
 
 
-def refine(points,R,t,parts,cfg):
+def refine(points,R,t,parts,cfg,objective=residual):
     R=R.copy(); t=t.copy(); last=math.inf
     for _ in range(cfg['optimizer_iterations']):
-        r=residual(points,R,t,parts); value=float(np.mean(huber(r,cfg['huber_m'])))
+        r=objective(points,R,t,parts); value=float(np.mean(huber(r,cfg['huber_m'])))
         if last-value<1e-11: break
         last=value; J=np.empty((len(points),6))
         for a in range(6):
             v=np.zeros(3); v[a%3]=1e-5 if a<3 else 1e-4
-            J[:,a]=(residual(points,R,t+v,parts)-r)/1e-5 if a<3 else (residual(points,R@exp(v),t,parts)-r)/(1e-4*.1)
+            J[:,a]=(objective(points,R,t+v,parts)-r)/1e-5 if a<3 else (objective(points,R@exp(v),t,parts)-r)/(1e-4*.1)
         w=np.sqrt(np.minimum(1,cfg['huber_m']/np.maximum(abs(r),1e-12)))
         step=np.linalg.lstsq(np.vstack([J*w[:,None],np.eye(6)*.003]),np.r_[-r*w,np.zeros(6)],rcond=None)[0]
         dt=step[:3]; dr=step[3:]/.1
@@ -158,7 +217,7 @@ def refine(points,R,t,parts,cfg):
         improved=False
         for factor in (1.,.5,.25,.125):
             nextR=R@exp(dr*factor); nextt=t+dt*factor
-            if np.mean(huber(residual(points,nextR,nextt,parts),cfg['huber_m']))<value:
+            if np.mean(huber(objective(points,nextR,nextt,parts),cfg['huber_m']))<value:
                 R,t=nextR,nextt; improved=True; break
         if not improved: break
     return R,t
@@ -209,7 +268,10 @@ def score(points,R,t,parts,sampled,cfg):
     rms=float(np.sqrt(np.mean(r*r)))
     reverse_rms=float(np.sqrt(np.mean(reverse*reverse))) if len(reverse) else 1.
     key_rms=float(np.sqrt(np.mean(key_reverse*key_reverse))) if len(key_reverse) else 1.
+    predicted=ray_ranges(points,R,t,parts); hit=np.isfinite(predicted)
+    range_rms=float(np.sqrt(np.mean((predicted[hit]-np.linalg.norm(points[hit],axis=1))**2))) if np.any(hit) else None
     return dict(score_m=.45*rms+.25*reverse_rms+.30*key_rms,fit_rms_m=rms,
+        ray_hit_fraction=float(np.mean(hit)),range_fit_rms_m=range_rms,
         reverse_rms_m=reverse_rms,key_reverse_rms_m=key_rms,key_points=key_points,
         inlier_fraction=float(np.mean(abs(r)<=cfg['inlier_distance_m'])),
         R=R.tolist(),position_lidar_m=t.tolist())
@@ -233,6 +295,8 @@ def fit_cluster(points,parts,cfg,up):
     for R in seeds:
         t=center-R@model_center
         solvedR,solvedt=refine(points,R,t,parts,cfg)
+        if cfg['ray_refine']:
+            solvedR,solvedt=refine(points,solvedR,solvedt,parts,cfg,range_residual)
         if solvedR[:,2]@up<math.cos(math.radians(cfg['upright_tilt_limit_deg'])): continue
         fits.append(score(points,solvedR,solvedt,parts,sampled,cfg))
     return sorted(fits,key=lambda r:r['score_m'])
@@ -253,10 +317,14 @@ def estimate(points,parts,cfg,up_lidar=(0.,0.,1.)):
     for index,g in enumerate(groups):
         extent=g.max(0)-g.min(0); usable=(cfg['cluster_min_points']<=len(g)<=cfg['cluster_max_points'] and
             np.linalg.norm(extent)<=cfg['cluster_max_diagonal_m'])
-        group_report.append(dict(index=index,points=len(g),extent_m=extent.tolist(),candidate=bool(usable)))
+        keep,coarse=coarse_candidate(g,cfg,up) if usable else (np.ones(len(g),dtype=bool),
+            dict(applied=False,excluded_indices=[],reason='not_a_coarse_candidate'))
+        q=g[keep]; usable=usable and len(q)>=cfg['cluster_min_points']
+        group_report.append(dict(index=index,points=len(g),fine_points=len(q),
+            extent_m=extent.tolist(),candidate=bool(usable),coarse=coarse))
         if not usable: continue
-        fits=fit_cluster(g,parts,cfg,up)
-        for f in fits: f.update(cluster=index,cluster_points=len(g)); candidates.append(f)
+        fits=fit_cluster(q,parts,cfg,up)
+        for f in fits: f.update(cluster=index,cluster_points=len(q),raw_cluster_points=len(g)); candidates.append(f)
     candidates.sort(key=lambda r:r['score_m']); reasons=[]
     if not candidates: reasons=['no_geometric_candidate']; best=None
     else:
@@ -267,6 +335,7 @@ def estimate(points,parts,cfg,up_lidar=(0.,0.,1.)):
         gap=alternate['score_m']-best['score_m'] if alternate else None
         best['distinct_alternative_score_gap_m']=gap
         if best['fit_rms_m']>cfg['max_fit_rms_m']: reasons.append('surface_fit')
+        if best['ray_hit_fraction']<cfg['min_inlier_fraction']: reasons.append('ray_model_miss')
         if best['inlier_fraction']<cfg['min_inlier_fraction']: reasons.append('low_inlier_fraction')
         if best['key_points']<cfg['min_key_points'] or best['key_reverse_rms_m']>cfg['max_key_reverse_rms_m']:
             reasons.append('asymmetric_feature_not_resolved')

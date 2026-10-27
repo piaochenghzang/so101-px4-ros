@@ -16,6 +16,11 @@ cluster_radius_m: 0.025
 cluster_min_points: 60
 cluster_max_points: 800
 cluster_max_diagonal_m: 0.25
+# Lower candidate band only; no known support pose/size is supplied to inference.
+# Set fraction=0 and ray_refine=false for the previous-method ablation.
+coarse_base_fraction: 0.15
+coarse_base_max_height_m: 0.020
+ray_refine: true
 model_sample_m: 0.008
 upright_tilt_limit_deg: 35.0  # Explicit known-object placement prior, relative to measured IMU up.
 yaw_seed_step_deg: 15
