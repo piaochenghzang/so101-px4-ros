@@ -21,6 +21,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_sensor_msgs
 )
 find_package(gazebo REQUIRED)
+find_package(ZLIB REQUIRED)
 add_message_files(FILES CoordinateTruth.msg KnownFlightSetpoint.msg KnownFlightStatus.msg)
 generate_messages(DEPENDENCIES std_msgs geometry_msgs mavros_msgs)
 
@@ -153,6 +154,10 @@ target_include_directories(so101_coordinate_truth PRIVATE ${GAZEBO_INCLUDE_DIRS}
 target_link_libraries(so101_coordinate_truth ${GAZEBO_LIBRARIES} ${catkin_LIBRARIES})
 add_dependencies(so101_coordinate_truth ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 set_target_properties(so101_coordinate_truth PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED YES)
+add_library(so101_mid360s_static SHARED src/perception/mid360s_static_plugin.cpp)
+target_include_directories(so101_mid360s_static PRIVATE ${GAZEBO_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS})
+target_link_libraries(so101_mid360s_static ${GAZEBO_LIBRARIES} ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
+set_target_properties(so101_mid360s_static PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED YES)
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
 ## target back to the shorter version for ease of user use
@@ -191,7 +196,8 @@ catkin_install_python(PROGRAMS scripts/observe_grasp_frames.py scripts/run_reado
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY scripts/grasp_audit DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
   PATTERN __pycache__ EXCLUDE)
-install(TARGETS so101_coordinate_truth LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
+install(TARGETS so101_coordinate_truth so101_mid360s_static LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
+install(DIRECTORY models/perception DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/models)
 install(DIRECTORY config/ DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config)
 
 ## Mark executables for installation
@@ -240,6 +246,7 @@ if(CATKIN_ENABLE_TESTING)
   add_executable(test_super_command_transition tests/test_command_transition.cpp)
   add_test(NAME super_command_transition COMMAND test_super_command_transition)
   add_test(NAME grasp_frame_math COMMAND ${PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_grasp_frames.py)
+  add_test(NAME mid360s_static_math COMMAND ${PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_mid360s_static.py)
   add_test(NAME grasp_frame_callbacks COMMAND ${CATKIN_DEVEL_PREFIX}/env.sh
     ${PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_frame_observer.py)
 endif()

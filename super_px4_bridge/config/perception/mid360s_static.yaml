@@ -1,0 +1,26 @@
+# S2 STATIC ONLY; no LIO/flight/grasp entry. The trace is MID360, not measured MID360S.
+schema_version: 1
+trace_file: models/perception/mid360.csv.gz
+trace_source: https://github.com/Livox-SDK/livox_laser_simulation
+trace_commit: 1cce1073633a062b92e30243a4c2920e45551bb5
+trace_uncompressed_sha256: aa1fc08b6a4400608dbd6ee832b7ea3a9c3c37197e734f60f58fe5abf762269a
+driver2_contract_commit: 21445540f0d100dc86a7e6df312dd70bbdb4afdf
+point_timestamp_unit: absolute_nanoseconds  # driver2 lddc.cpp InitPointcloud2Msg.
+point_rate_hz: 200000
+frame_rate_hz: 10
+imu_rate_hz: 200
+duration_s: 2.0
+warmup_s: 0.2
+integration_windows_s: [0.2, 0.5, 1.0]
+coverage_cell_m: 0.005
+range_noise_sigmas_m: [0.0, 0.01, 0.02]  # Sensitivity cases, not a calibrated MID360S noise law.
+seed: 19
+lower_housing_collision_height_m: 0.0395  # Manual p16, below O at 47 mm; optical dome is visual only.
+ros_port: 11411
+gazebo_port: 11355
+topics:
+  points: /mid360s_sim/points
+  imu: /mid360s_sim/imu
+  truth: /mid360s_s2/ray_truth  # Scoring only; never feed this to perception or LIO.
+# No reflectivity/material/dropout/beam-footprint/angular-error model yet.
+# IMU is ideal static specific force in L, with unknown orientation; not a flight IMU model.
