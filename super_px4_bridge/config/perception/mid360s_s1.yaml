@@ -1,0 +1,69 @@
+# Offline S1 only. This file is not consumed by flight/grasp controllers.
+# Metres, kilograms, DEGREES. T_parent_child maps child points into parent.
+# B: ROS body FLU, M: local ENU, O: object/grasp reference, L: LiDAR output frame.
+schema_version: 1
+profile: mid360s_top_upright_candidate
+measurement_status: simulation_candidate_not_hardware_calibration
+sources:
+  specs: https://www.livoxtech.com/mid-360s/specs
+  manual: https://terra-1-g.djicdn.com/65c028cd298f4669a7f0e40e50ba1131/Mid-360S/UM/20260601/Livox_Mid-360s_User_Manual_en.pdf
+lidar:
+  model: MID360S
+  housing_size_m: [0.065, 0.065, 0.060]
+  mass_kg: 0.265
+  vertical_fov_deg: [-7.0, 52.0]
+  horizontal_fov_deg: 360.0
+  min_range_m: 0.2  # 0.1-0.2 m is reference-only per manual.
+  max_range_m: 40.0  # Only a geometric cutoff; not a detection promise.
+  fov_margin_deg: 1.0
+  # Bottom-centre F uses the same axes as the device's O-XYZ diagram (manual p19).
+  # X points away from the side connector; align X with body forward for this candidate.
+  body_from_base_xyz_rpy_deg: [0.0, 0.0, 0.113, 0.0, 0.0, 0.0]
+  # Manual p16: O is 47 mm above the bottom, NOT the 60 mm housing centre/top.
+  base_from_lidar_xyz_rpy_deg: [0.0, 0.0, 0.047, 0.0, 0.0, 0.0]
+  # Enter calibrated T_B_L here later. null derives it from the two transforms above.
+  body_from_lidar_override_xyz_rpy_deg: null
+  plate_size_m: [0.120, 0.120, 0.003]
+  plate_density_kg_m3: 2700.0
+  # Four bottom M3 holes, 5 mm max depth; hole coordinates must follow official CAD.
+  peripheral_air_gap_m: 0.010
+  minimum_exposed_top_area_m2: 0.010
+vehicle:
+  # Includes fold-state collision boxes from current SO101 SDF when checking sight lines.
+  body_from_arm_xyz_rpy_deg: [0.0, 0.0, -0.05, 180.0, 0.0, 0.0]
+  grasp_reference_gripper_m: [0.0045, -0.000218, -0.104]
+  # Local SDF base collision proxy; mesh/cables/rotors are NOT a certified envelope.
+  body_box_xyz_size_m: [0.0, 0.0, 0.007, 0.3535533906, 0.3535533906, 0.05]
+  ground_z_m: 0.05
+  attitude_sweep_deg: [-3.0, 0.0, 3.0]  # Roll and pitch, crossed; no flight disturbance proof.
+target:
+  # O is the desired grasp reference, not the large body's centroid.
+  position_world_m: [5.0, 0.0, 1.5]
+  quaternion_world_wxyz: [0.7352229434349684, -0.08805605920255868, -0.08604270827741496, 0.6665508279469948]
+  object_from_grasp_xyz_rpy_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  candidate_total_mass_kg: 0.010  # Lightweight hollow target goal, not a proven payload.
+  parts:
+    - name: body
+      size_m: [0.120, 0.080, 0.060]
+      xyz_rpy_deg: [-0.020, 0.0, -0.090, 0.0, 0.0, 0.0]
+    - name: key
+      size_m: [0.030, 0.025, 0.020]
+      xyz_rpy_deg: [0.025, 0.025, -0.050, 0.0, 0.0, 0.0]
+    - name: handle
+      size_m: [0.020, 0.020, 0.070]
+      xyz_rpy_deg: [0.0, 0.0, -0.025, 0.0, 0.0, 0.0]
+  # Offline fixture under the body; not the old cube20 support or a runtime profile.
+  support_size_m: [0.140, 0.100, 0.004]
+  object_from_support_xyz_rpy_deg: [-0.020, 0.0, -0.122, 0.0, 0.0, 0.0]
+  observation_parts: [body, key]
+  observation_reference_part: body
+  grasp_part: handle
+  nominal_grasp_section_width_m: 0.020
+observations:
+  horizontal_distances_m: [0.8, 1.5, 3.0, 5.0]
+  lidar_above_reference_m: [0.0, 0.1, 0.3, 0.6]
+  # From observation reference to sensor, measured around world +Z from +X.
+  reference_to_lidar_azimuth_deg: 180.0
+  primary: {horizontal_m: 1.5, lidar_above_reference_m: 0.0}
+  backup: {horizontal_m: 3.0, lidar_above_reference_m: 0.1}
+  surface_grid_per_edge: 5  # Geometry samples, NEVER expected measured point counts.
