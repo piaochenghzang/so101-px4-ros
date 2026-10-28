@@ -1,4 +1,4 @@
-// Static S2 ray/clock probe. MID360 vendor trace + MID360S FOV is an approximation.
+// Static S2 probe, with an explicit moving-sensor demo opt-in. MID360 trace/MID360S FOV proxy.
 // No actuation, motion compensation, calibrated optics, intensity or noise claims.
 #include <gazebo/gazebo.hh>
 #include <gazebo/physics/physics.hh>
@@ -40,12 +40,17 @@ class Mid360sStaticPlugin : public WorldPlugin {
       world_=world;
       if (!ros::isInitialized()) throw std::runtime_error("Load gazebo_ros_api_plugin first");
       if (world_->Physics()->GetType()!="ode") throw std::runtime_error("S2 requires ODE");
-      auto model=world_->ModelByName("s2_vehicle");
-      sensor_=model ? model->GetLink("lidar_frame") : nullptr;
-      if (!sensor_ || !model->IsStatic()) throw std::runtime_error("Missing STATIC s2_vehicle/lidar_frame");
-      for (const auto &m:world_->Models())
-        if (!m->IsStatic()) throw std::runtime_error("S2 world must contain only static models");
-      pose_=sensor_->WorldPose();
+      moving_demo_=s->HasElement("demoMovingSensor") && s->Get<bool>("demoMovingSensor");
+      auto model=world_->ModelByName(moving_demo_ ? s->Get<std::string>("vehicle_name") : "s2_vehicle");
+      sensor_=model ? model->GetLink(moving_demo_ ? s->Get<std::string>("sensor_link") : "lidar_frame") : nullptr;
+      if(!sensor_)throw std::runtime_error("Missing configured sensor link");
+      if(!moving_demo_) {
+        if(!model->IsStatic())throw std::runtime_error("Missing STATIC s2_vehicle");
+        for(const auto &m:world_->Models())if(!m->IsStatic())throw std::runtime_error("S2 world must contain only static models");
+      } else {
+        offset_=s->Get<ignition::math::Pose3d>("sensor_pose");
+      }
+      pose_=sensor_->WorldPose()*offset_;
       rate_=s->Get<unsigned int>("point_rate"); frame_rate_=s->Get<unsigned int>("frame_rate");
       imu_rate_=s->Get<unsigned int>("imu_rate");
       min_=s->Get<double>("min_range"); max_=s->Get<double>("max_range");
@@ -137,18 +142,30 @@ class Mid360sStaticPlugin : public WorldPlugin {
   }
   void Update(const common::UpdateInfo &info) {
     const uint64_t now=static_cast<uint64_t>(info.simTime.sec)*1000000000ULL+info.simTime.nsec;
+    // The moving demo only needs a snapshot. Stop ray work when its raw-cloud
+    // observer unsubscribes; default S2 timing/coverage is unchanged.
+    if(moving_demo_ && points_pub_.getNumSubscribers()==0) {
+      started_=false;index_=0;frame_=0;imu_seq_=0;return;
+    }
     if (!started_) { epoch_=now; next_imu_=epoch_; started_=true; NewFrame(); }
-    if (now<last_now_ || sensor_->WorldPose().Pos().Distance(pose_.Pos())>1e-9 ||
-        (pose_.Rot().Inverse()*sensor_->WorldPose().Rot()).Euler().Length()>1e-9) {
+    if (now<last_now_ || (!moving_demo_ && (sensor_->WorldPose().Pos().Distance(pose_.Pos())>1e-9 ||
+        (pose_.Rot().Inverse()*sensor_->WorldPose().Rot()).Euler().Length()>1e-9))) {
       gzerr << "S2_STATIC_ONLY: time reset or sensor movement, stopping publication\n";
       update_.reset(); return;
     }
     last_now_=now;
+    if(moving_demo_)pose_=sensor_->WorldPose()*offset_;
+    // Demo gravity/gyro cue only, not an accelerometer/LIO dynamics model.
+    // Rays use the current 1ms physics pose; source point times are retained.
     while (next_imu_<=now) {
       sensor_msgs::Imu imu; imu.header.seq=imu_seq_++; imu.header.stamp=Stamp(next_imu_);
       imu.header.frame_id="mid360s_lidar"; imu.orientation_covariance[0]=-1;
       auto force=pose_.Rot().RotateVectorReverse(-world_->Gravity());
       imu.linear_acceleration.x=force.X(); imu.linear_acceleration.y=force.Y(); imu.linear_acceleration.z=force.Z();
+      if(moving_demo_) {
+        const auto w=pose_.Rot().RotateVectorReverse(sensor_->WorldAngularVel());
+        imu.angular_velocity.x=w.X();imu.angular_velocity.y=w.Y();imu.angular_velocity.z=w.Z();
+      }
       imu_pub_.publish(imu); next_imu_+=imu_ns_;
     }
     while (epoch_+index_*point_ns_<=now) {
@@ -160,13 +177,13 @@ class Mid360sStaticPlugin : public WorldPlugin {
     }
   }
   physics::WorldPtr world_; physics::LinkPtr sensor_; physics::RayShapePtr ray_;
-  ignition::math::Pose3d pose_; event::ConnectionPtr update_;
+  ignition::math::Pose3d pose_,offset_; event::ConnectionPtr update_;
   std::unique_ptr<ros::NodeHandle> node_; ros::Publisher points_pub_,truth_pub_,imu_pub_;
   std::vector<Angle> angles_; std::mt19937 rng_; std::normal_distribution<double> normal_{0.,1.};
   sensor_msgs::PointCloud2 cloud_,truth_;
   uint64_t epoch_=0,index_=0,next_imu_=0,point_ns_=0,imu_ns_=0,last_now_=0;
   unsigned int rate_=0,frame_rate_=0,imu_rate_=0,frame_points_=0,frame_=0,imu_seq_=0;
-  double min_=0,max_=0,low_=0,high_=0,sigma_=0; bool started_=false;
+  double min_=0,max_=0,low_=0,high_=0,sigma_=0; bool started_=false,moving_demo_=false;
 };
 GZ_REGISTER_WORLD_PLUGIN(Mid360sStaticPlugin)
 }  // namespace gazebo

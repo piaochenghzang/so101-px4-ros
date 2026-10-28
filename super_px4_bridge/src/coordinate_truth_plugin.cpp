@@ -28,6 +28,7 @@ public:
         if (approach_guard_) world_->Physics()->GetContactManager()->SetNeverDropContacts(true);
         if (sdf->HasElement("vehicleName")) vehicle_ = sdf->Get<std::string>("vehicleName");
         if (sdf->HasElement("targetName")) target_ = sdf->Get<std::string>("targetName");
+        payload_profile_=sdf->HasElement("targetProfile") && sdf->Get<std::string>("targetProfile")=="mid360s_body_key_handle";
         instance_ = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
         node_.reset(new ros::NodeHandle());
         publisher_ = node_->advertise<super_px4_bridge::CoordinateTruth>("/grasp_audit/truth", 10);
@@ -63,7 +64,7 @@ private:
         std::vector<physics::CollisionPtr> obstacles;
         for (const auto &m:{cube,support}) for (const auto &l:m->GetLinks())
             for (const auto &c:l->GetCollisions()) obstacles.push_back(c);
-        if (obstacles.size()!=2) return;
+        if (obstacles.size()!=(payload_profile_ ? 4u : 2u)) return;
         for (const auto &m:world_->Models()) {
             if (m==model || m==cube || m==support || m->GetName()=="ground_plane" ||
                 m->GetName()=="asphalt_plane") continue;
@@ -129,14 +130,28 @@ private:
         if (!cube || !support || !jaw || !joint || std::abs(joint->LowerLimit(0)-.04)>1e-6 ||
             std::abs(joint->UpperLimit(0)-.3)>1e-6) return;
         const auto target=cube->GetLink("link"),plate=support->GetLink("link");
-        if (!target || !plate || target->GetCollisions().size()!=1 || plate->GetCollisions().size()!=1) return;
-        const auto cb=boost::dynamic_pointer_cast<physics::BoxShape>(target->GetCollisions()[0]->GetShape());
+        if (!target || !plate || target->GetCollisions().size()!=(payload_profile_ ? 3u : 1u) || plate->GetCollisions().size()!=1) return;
+        const auto handle=target->GetCollision("collision");
+        if(!handle)return;
+        const auto cb=boost::dynamic_pointer_cast<physics::BoxShape>(handle->GetShape());
         const auto sb=boost::dynamic_pointer_cast<physics::BoxShape>(plate->GetCollisions()[0]->GetShape());
-        if (!cb || !sb || (cb->Size()-ignition::math::Vector3d(.02,.02,.02)).Length()>1e-6 ||
+        if(!cb || !sb)return;
+        if(payload_profile_) {
+            auto matches=[](physics::CollisionPtr c,const ignition::math::Vector3d &size,const ignition::math::Vector3d &position) {
+                const auto b=c ? boost::dynamic_pointer_cast<physics::BoxShape>(c->GetShape()) : nullptr;
+                return b && (b->Size()-size).Length()<1e-6 &&
+                    (c->RelativePose().Pos()-position).Length()<1e-6 && c->RelativePose().Rot().Euler().Length()<1e-6;
+            };
+            if(!matches(handle,{.02,.02,.07},{0,0,-.025}) ||
+               !matches(target->GetCollision("body"),{.12,.08,.06},{-.02,0,-.09}) ||
+               !matches(target->GetCollision("key"),{.03,.025,.02},{.025,.025,-.05}) ||
+               (sb->Size()-ignition::math::Vector3d(.14,.10,.004)).Length()>1e-6)return;
+        } else if((cb->Size()-ignition::math::Vector3d(.02,.02,.02)).Length()>1e-6 ||
             ((sb->Size()-ignition::math::Vector3d(.004,.024,.004)).Length()>1e-6 &&
-             (sb->Size()-ignition::math::Vector3d(.008,.024,.004)).Length()>1e-6)) return;
+             (sb->Size()-ignition::math::Vector3d(.008,.024,.004)).Length()>1e-6))return;
         double slack=100.;unsigned count=0;
-        std::vector<physics::CollisionPtr> obstacles{target->GetCollisions()[0],plate->GetCollisions()[0]};
+        std::vector<physics::CollisionPtr> obstacles{handle,plate->GetCollisions()[0]};
+        for(const auto &col:target->GetCollisions())if(col!=handle)obstacles.push_back(col);
         const auto asphalt=world_->ModelByName("asphalt_plane");
         if(asphalt)for(const auto &l:asphalt->GetLinks())for(const auto &c:l->GetCollisions())obstacles.push_back(c);
         for(const auto &m:world_->Models())if(m->GetName().rfind("demo_obstacle_",0)==0) {
@@ -204,11 +219,12 @@ private:
                 const bool arm_a=a.find(vehicle_+"::so101::")==0, arm_b=b.find(vehicle_+"::so101::")==0;
                 const bool vehicle_a=a.find(vehicle_+"::")==0, vehicle_b=b.find(vehicle_+"::")==0;
                 if (fine_guard_) {
-                    const auto &other=a==target_+"::link::collision" ? b : a;
-                    const bool target_contact=a==target_+"::link::collision" || b==target_+"::link::collision";
-                    if(target_contact) {
-                        fixed_contact|=other==vehicle_+"::so101::gripper_link::gripper_fixed_finger_collision";
-                        moving_contact|=other==vehicle_+"::so101::moving_jaw_so101_v1_link::moving_jaw_collision";
+                    const bool first=a.find(target_+"::link::")==0,second=b.find(target_+"::link::")==0;
+                    if(first!=second) {
+                        const auto &other=first ? b : a;const auto &part=first ? a : b;
+                        const bool handle=part==target_+"::link::collision";
+                        fixed_contact|=handle && other==vehicle_+"::so101::gripper_link::gripper_fixed_finger_collision";
+                        moving_contact|=handle && other==vehicle_+"::so101::moving_jaw_so101_v1_link::moving_jaw_collision";
                         support_contact|=other=="cube_support::link::collision";
                     }
                 }
@@ -308,7 +324,7 @@ private:
         "wrist_flex", "wrist_roll", "gripper"};
     std::vector<uint64_t> identity_;
     uint64_t epoch_{1};
-    bool approach_guard_{false},contact_seen_{false};
+    bool approach_guard_{false},contact_seen_{false},payload_profile_{false};
     bool fine_guard_{false},fine_contact_seen_{false};
     unsigned fine_frames_{0},fine_both_{0},fine_support_{0};
     double last_time_{-1}, last_publish_{-1};
