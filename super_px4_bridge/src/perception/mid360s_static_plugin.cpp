@@ -41,6 +41,7 @@ class Mid360sStaticPlugin : public WorldPlugin {
       if (!ros::isInitialized()) throw std::runtime_error("Load gazebo_ros_api_plugin first");
       if (world_->Physics()->GetType()!="ode") throw std::runtime_error("S2 requires ODE");
       moving_demo_=s->HasElement("demoMovingSensor") && s->Get<bool>("demoMovingSensor");
+      lio_imu_=moving_demo_ && s->HasElement("demoLioImu") && s->Get<bool>("demoLioImu");
       auto model=world_->ModelByName(moving_demo_ ? s->Get<std::string>("vehicle_name") : "s2_vehicle");
       sensor_=model ? model->GetLink(moving_demo_ ? s->Get<std::string>("sensor_link") : "lidar_frame") : nullptr;
       if(!sensor_)throw std::runtime_error("Missing configured sensor link");
@@ -145,7 +146,7 @@ class Mid360sStaticPlugin : public WorldPlugin {
     // The moving demo only needs a snapshot. Stop ray work when its raw-cloud
     // observer unsubscribes; default S2 timing/coverage is unchanged.
     if(moving_demo_ && points_pub_.getNumSubscribers()==0) {
-      started_=false;index_=0;frame_=0;imu_seq_=0;return;
+      started_=false;index_=0;frame_=0;imu_seq_=0;previous_imu_ns_=0;return;
     }
     if (!started_) { epoch_=now; next_imu_=epoch_; started_=true; NewFrame(); }
     if (now<last_now_ || (!moving_demo_ && (sensor_->WorldPose().Pos().Distance(pose_.Pos())>1e-9 ||
@@ -160,7 +161,16 @@ class Mid360sStaticPlugin : public WorldPlugin {
     while (next_imu_<=now) {
       sensor_msgs::Imu imu; imu.header.seq=imu_seq_++; imu.header.stamp=Stamp(next_imu_);
       imu.header.frame_id="mid360s_lidar"; imu.orientation_covariance[0]=-1;
-      auto force=pose_.Rot().RotateVectorReverse(-world_->Gravity());
+      auto acceleration=ignition::math::Vector3d::Zero;
+      if(lio_imu_) {
+        // Differentiate velocity AT THE SENSOR, including the rigid lever arm.
+        // Average over the actual IMU source interval; do not add gravity twice.
+        const auto velocity=sensor_->WorldLinearVel(offset_.Pos());
+        if(previous_imu_ns_ && now>previous_imu_ns_)
+          acceleration=(velocity-previous_velocity_)/(double(now-previous_imu_ns_)*1e-9);
+        previous_velocity_=velocity;previous_imu_ns_=now;
+      }
+      auto force=pose_.Rot().RotateVectorReverse(acceleration-world_->Gravity());
       imu.linear_acceleration.x=force.X(); imu.linear_acceleration.y=force.Y(); imu.linear_acceleration.z=force.Z();
       if(moving_demo_) {
         const auto w=pose_.Rot().RotateVectorReverse(sensor_->WorldAngularVel());
@@ -176,6 +186,7 @@ class Mid360sStaticPlugin : public WorldPlugin {
       }
     }
   }
+  bool lio_imu_{false};uint64_t previous_imu_ns_{0};ignition::math::Vector3d previous_velocity_;
   physics::WorldPtr world_; physics::LinkPtr sensor_; physics::RayShapePtr ray_;
   ignition::math::Pose3d pose_,offset_; event::ConnectionPtr update_;
   std::unique_ptr<ros::NodeHandle> node_; ros::Publisher points_pub_,truth_pub_,imu_pub_;

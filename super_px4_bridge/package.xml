@@ -60,7 +60,6 @@
   <exec_depend>rosgraph</exec_depend>
   <exec_depend>rosgraph_msgs</exec_depend>
   <exec_depend>rosbag</exec_depend>
-  <exec_depend>std_srvs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <build_depend>geometry_msgs</build_depend>
@@ -97,4 +96,5 @@
     <!-- Other tools can request additional information be placed here -->
 
   </export>
+  <depend>std_srvs</depend>
 </package>

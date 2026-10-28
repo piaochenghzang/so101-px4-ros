@@ -26,9 +26,13 @@ int main() {
     assert(c.accept(3,3,3,true));
     assert(!c.fresh(2)); assert(c.failed);
     super_px4_bridge::KnownTaskBinding d;
+    assert(!d.beginCarry());
     assert(d.accept(0,0,0,false)); assert(!d.accept(1,0,2,false));
     assert(d.accept(11,22,33,false)); assert(!d.accept(12,22,33,false));
     assert(!d.accept(11,23,33,false)); assert(!d.accept(11,22,34,false));
     assert(!d.accept(0,0,0,false)); assert(d.accept(11,22,33,true));
     assert(!d.accept(11,22,33,false)); assert(d.accept(11,22,33,true));
+    assert(d.beginCarry());assert(!d.beginCarry());
+    assert(d.accept(11,22,33,false));assert(!d.accept(12,22,33,false));
+    assert(d.accept(11,22,33,true));
 }

@@ -18,6 +18,7 @@
 #include <super_px4_bridge/KnownFlightSetpoint.h>
 #include <super_px4_bridge/KnownFlightStatus.h>
 #include <std_msgs/String.h>
+#include <std_srvs/Trigger.h>
 
 
 class SuperFlightManager
@@ -28,6 +29,8 @@ public:
           pnh_("~")
     {
         loadParameters();
+        pnh_.param("allow_slow_carry",allow_slow_carry_,false);
+        carry_service_=pnh_.advertiseService("begin_slow_carry",&SuperFlightManager::beginSlowCarry,this);
 
         state_sub_ =
             nh_.subscribe(
@@ -295,6 +298,21 @@ private:
         }
     }
 
+    // Simulation demo only: the coordinator calls this AFTER independent lift/hold
+    // validation. It does not authorize closure and never changes the task IDs.
+    bool beginSlowCarry(std_srvs::Trigger::Request &,std_srvs::Trigger::Response &out)
+    {
+        const auto now=ros::Time::now();
+        out.success=allow_slow_carry_ && flight_state_==FlightState::TRACK_KNOWN &&
+            known_lease_.fresh(now.toSec()) && odomFresh(now) &&
+            current_fcu_state_.armed && current_fcu_state_.mode=="OFFBOARD" && known_binding_.beginCarry();
+        if (out.success) {
+            carry_origin_=motionOf(known_setpoint_).position;carry_started_=now;
+            out.message="Bounded slow carry accepted; same task, fresh lease and contact monitoring required";
+        } else out.message="Slow carry requires opted-in, fresh terminal-hold task";
+        return true;
+    }
+
     void knownSetpointCallback(const super_px4_bridge::KnownFlightSetpointConstPtr &msg)
     {
         if ((!known_goal_mode_ && !allow_terminal_known_handover_) || known_lease_.failed) return;
@@ -319,6 +337,12 @@ private:
             && std::isfinite(p.yaw) && motion.position[2]>=.3 && motion.position[2]<=2.5
             && super_px4_bridge::distance(motion.position,positionOf(current_odom_.pose.pose.position))<=1.0
             && super_px4_bridge::distance(motion.velocity,super_px4_bridge::Vec3{{0,0,0}})<=1.0;
+        if (known_binding_.carry &&
+            ((ros::Time::now()-carry_started_).toSec()>120.0 ||
+             super_px4_bridge::distance(motion.position,carry_origin_)>1.0 ||
+             super_px4_bridge::distance(motion.velocity,super_px4_bridge::Vec3{{0,0,0}})>.040001 ||
+             motion.position[2]<carry_origin_[2]-.002 ||
+             std::abs(std::atan2(std::sin(p.yaw-known_setpoint_.yaw),std::cos(p.yaw-known_setpoint_.yaw)))>.02)) return;
         auto binding=known_binding_;
         if (!known_lease_.accept(msg->task_id,msg->header.stamp.toSec(),ros::Time::now().toSec(),
             valid && binding.accept(msg->plan_id,msg->target_id,msg->scene_id,msg->terminal_hold))) return;
@@ -1104,6 +1128,10 @@ private:
     ros::Publisher flight_state_pub_;
     ros::Publisher known_status_pub_;
     ros::Time last_fcu_time_;
+    bool allow_slow_carry_{false};
+    ros::ServiceServer carry_service_;
+    ros::Time carry_started_;
+    super_px4_bridge::Vec3 carry_origin_{};
     bool known_goal_mode_{false};
     bool allow_terminal_known_handover_{false};
     super_px4_bridge::KnownFlightLease known_lease_;

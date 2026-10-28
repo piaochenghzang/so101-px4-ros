@@ -1,5 +1,7 @@
 # so101-px4-ros
 
+最新演示（2026-10-28）：MID360 代理点云 / IMU → FAST-LIO → SUPER 三障碍绕行 → 飞行抓取 → 携物到指定点已通过。当前工作区入口：`bash /home/pcz/super_ws/src/super_px4_bridge/scripts/start_lidar_grasp_demo.sh --gui`。首次需运行同目录下的 `perception/build_fastlio_sim.sh`。完整修改说明与验证数据集中在 [PX4 的 SO101_REVIEW.md 第 43 节](https://github.com/piaochenghzang/PX4-RoboMaster/blob/robomaster-a-port/SO101_REVIEW.md)。PX4 EKF 与精接近仍有仿真真值辅助，FAST-LIO 当前用于规划地图 / 里程计。
+
 SO101 + PX4 + Gazebo Classic 的 ROS1 仿真配套源码。
 当前验证环境：Ubuntu 20.04 / ROS Noetic / Gazebo 11；不使用 Ubuntu22。
 
