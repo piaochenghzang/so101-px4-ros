@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Simulation bridge: timed MID360 proxy -> unmodified FAST-LIO -> SUPER.
-The one-time map alignment uses stationary MAVROS odometry, never object truth.
-PX4 EKF localization remains explicitly selected by the experiment launcher.
+The default alignment uses one stationary MAVROS pose for the existing demo.
+Independent mode sets its origin from LIO alone and can feed PX4 external pose;
+it never subscribes to MAVROS odometry for alignment.
 """
 import copy
 import json
@@ -25,14 +26,37 @@ def timed_points(array):
     out['time']=offsets.astype(np.float64)*1e-9;out['ring']=array['line']
     return out
 
+def lio_origin_alignment(first_body):
+    """Gravity-aligned local map, origin and heading from LIO alone."""
+    T=np.asarray(first_body,dtype=float)
+    if T.shape!=(4,4) or not np.isfinite(T).all() or not np.allclose(T[3],[0,0,0,1]):
+        raise ValueError('Invalid initial LIO body pose')
+    if not np.allclose(T[:3,:3].T@T[:3,:3],np.eye(3),atol=1e-6) or np.linalg.det(T[:3,:3])<.999:
+        raise ValueError('Invalid initial LIO rotation')
+    yaw=np.arctan2(T[1,0],T[0,0]);c=np.cos(yaw);q=np.sin(yaw)
+    out=np.eye(4);out[:3,:3]=[[c,q,0],[-q,c,0],[0,0,1]]
+    out[:3,3]=-out[:3,:3]@T[:3,3]
+    return out
+
+
 class Adapter:
     def __init__(self):
         import rospy
         from nav_msgs.msg import Odometry
+        from geometry_msgs.msg import PoseWithCovarianceStamped
         from sensor_msgs.msg import PointCloud2
         from std_msgs.msg import String
         from check_installation import load_profile,sensor_transform
         self.rospy=rospy;self.Odometry=Odometry;self.String=String
+        self.alignment_source=rospy.get_param('~alignment_source','stationary_mavros')
+        self.publish_to_fcu=rospy.get_param('~publish_to_fcu',False)
+        if self.alignment_source not in ('stationary_mavros','lio_origin'):
+            raise ValueError('Unknown alignment source')
+        if self.publish_to_fcu and self.alignment_source!='lio_origin':
+            raise ValueError('FCU input cannot align against its own MAVROS output')
+        self.map_frame='map' if self.alignment_source=='lio_origin' else 'world'
+        self.PoseWithCovarianceStamped=PoseWithCovarianceStamped
+        self.fcu_pub=rospy.Publisher('/mavros/vision_pose/pose_cov',PoseWithCovarianceStamped,queue_size=5) if self.publish_to_fcu else None
         self.mount=sensor_transform(load_profile(Path(__file__).resolve().parents[2]/"config/perception/mid360s_s1.yaml"));self.alignment=None;self.local=None;self.last=None
         self.raw_pub=rospy.Publisher('/fastlio_sim/points',PointCloud2,queue_size=2)
         self.odom_pub=rospy.Publisher('/lidar_slam/odom',Odometry,queue_size=20)
@@ -41,7 +65,9 @@ class Adapter:
         self.subs=[rospy.Subscriber(t,k,f,queue_size=n,tcp_nodelay=True) for t,k,f,n in
             [('/mid360s_sim/points',PointCloud2,self.raw,2),('/Odometry',Odometry,self.odom,20),
              ('/fastlio/cloud_registered',PointCloud2,self.cloud,2),
-             ('/mavros/local_position/odom',Odometry,self.local_odom,20)]]
+             ]]
+        if self.alignment_source=='stationary_mavros':
+            self.subs.append(rospy.Subscriber('/mavros/local_position/odom',Odometry,self.local_odom,queue_size=20,tcp_nodelay=True))
 
     @staticmethod
     def matrix(p):
@@ -79,20 +105,37 @@ class Adapter:
         T=self.matrix(m.pose.pose);now=self.rospy.Time.now().to_sec();stamp=m.header.stamp.to_sec()
         if not -.02<=now-stamp<=.3:return
         if self.alignment is None:
-            a=self.local
-            if a is None or abs(a.header.stamp.to_sec()-stamp)>.10:return
-            v=a.twist.twist.linear;w=a.twist.twist.angular
-            if np.linalg.norm([v.x,v.y,v.z])>.03 or np.linalg.norm([w.x,w.y,w.z])>.05:return
-            self.alignment=self.matrix(a.pose.pose)@self.mount@np.linalg.inv(T)
+            if self.alignment_source=='lio_origin':
+                self.alignment=lio_origin_alignment(T@np.linalg.inv(self.mount))
+                source='FIRST_LIO_BODY_POSE'
+            else:
+                a=self.local
+                if a is None or abs(a.header.stamp.to_sec()-stamp)>.10:return
+                v=a.twist.twist.linear;w=a.twist.twist.angular
+                if np.linalg.norm([v.x,v.y,v.z])>.03 or np.linalg.norm([w.x,w.y,w.z])>.05:return
+                self.alignment=self.matrix(a.pose.pose)@self.mount@np.linalg.inv(T)
+                source='ONE_STATIONARY_MAVROS_POSE'
             self.alignment_pub.publish(self.String(json.dumps(dict(world_from_camera_init=self.alignment.tolist(),
-                calibration_stamp_s=stamp,source='ONE_STATIONARY_MAVROS_POSE',continuous_truth_correction=False))))
+                calibration_stamp_s=stamp,source=source,map_frame=self.map_frame,
+                uses_mavros_for_alignment=self.alignment_source=='stationary_mavros',continuous_truth_correction=False))))
         body=self.alignment@T@np.linalg.inv(self.mount)
-        out=self.Odometry();out.header=copy.deepcopy(m.header);out.header.frame_id='world';out.child_frame_id='base_link'
+        out=self.Odometry();out.header=copy.deepcopy(m.header);out.header.frame_id=self.map_frame;out.child_frame_id='base_link'
         self.set_pose(out.pose.pose,body)
         if self.last and stamp>self.last[0]:
             v=body[:3,:3].T@(body[:3,3]-self.last[1])/(stamp-self.last[0])
             out.twist.twist.linear.x,out.twist.twist.linear.y,out.twist.twist.linear.z=map(float,v)
         self.last=(stamp,body[:3,3].copy());self.odom_pub.publish(out)
+        if self.fcu_pub is not None and -.02<=now-stamp<=.15:
+            # Position+yaw fusion only for this first migration stage. No
+            # differentiated velocity is represented as a fused LIO velocity.
+            pose=self.PoseWithCovarianceStamped();pose.header=copy.deepcopy(out.header);pose.pose.pose=out.pose.pose
+            source_diag=np.diag(np.asarray(m.pose.covariance,dtype=float).reshape(6,6))
+            if not np.isfinite(source_diag).all():return
+            diagonal=np.maximum(source_diag,[.05**2]*3+[.03**2]*3)
+            if np.max(diagonal[:3])>.25:return
+            pose.pose.covariance=np.diag(diagonal).ravel().tolist()
+            self.fcu_pub.publish(pose)
+
 
     def cloud(self,m):
         if self.alignment is None or m.header.frame_id!='camera_init':return
@@ -101,7 +144,7 @@ class Adapter:
         xyz=np.column_stack([array[k] for k in ('x','y','z')])
         xyz=xyz@self.alignment[:3,:3].T+self.alignment[:3,3]
         for i,k in enumerate(('x','y','z')):array[k]=xyz[:,i]
-        out.header.frame_id='world';out.data=array.tobytes();self.cloud_pub.publish(out)
+        out.header.frame_id=self.map_frame;out.data=array.tobytes();self.cloud_pub.publish(out)
 
 if __name__=='__main__':
     import rospy

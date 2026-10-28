@@ -1,6 +1,11 @@
 <launch>
+  <arg name="alignment_source" default="stationary_mavros"/>
+  <arg name="publish_to_fcu" default="false"/>
   <rosparam command="load" file="$(find super_px4_bridge)/config/perception/fastlio_sim.yaml"/>
-  <node pkg="super_px4_bridge" type="fastlio_sim_adapter.py" name="fastlio_sim_adapter" output="screen" required="true"/>
+  <node pkg="super_px4_bridge" type="fastlio_sim_adapter.py" name="fastlio_sim_adapter" output="screen" required="true">
+    <param name="alignment_source" value="$(arg alignment_source)"/>
+    <param name="publish_to_fcu" value="$(arg publish_to_fcu)"/>
+  </node>
   <node pkg="fast_lio" type="fastlio_mapping" name="laserMapping" output="screen" required="true">
     <remap from="/cloud_registered" to="/fastlio/cloud_registered"/>
   </node>
