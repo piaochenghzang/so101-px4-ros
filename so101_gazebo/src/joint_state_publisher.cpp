@@ -142,7 +142,9 @@ private:
         last_publish_time_ = info.simTime;
 
         sensor_msgs::JointState message;
-        message.header.stamp = ros::Time::now();
+        // Stamp the Gazebo sample itself. ROS /clock delivery can lag a
+        // physics update and must not give distinct samples the same time.
+        message.header.stamp = ros::Time(info.simTime.sec, info.simTime.nsec);
         message.name = joint_names_;
 
         message.position.resize(joints_.size());
